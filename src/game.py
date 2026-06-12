@@ -1,21 +1,91 @@
-# game.py - 主游戏循环、摄像机、输入处理、渲染管线
+# game.py - 主菜单、游戏循环、摄像机、输入处理、渲染管线
 import pygame
 import math
+import random
+import time
 import constants as C
 from pygame.locals import *
 from world import World, generate_terrain, create_terrain_surface, tile_in_map
 from player import Player
+from slime import Slime
 
 
-def run(screen):
-    """主游戏函数"""
-    # 初始化资源加载
+def run_menu(screen):
+    """主菜单界面"""
     import assets
     assets.init()
 
     clock = pygame.time.Clock()
+    font_title = assets.font_large if assets.font_large else pygame.font.Font(None, 60)
+    font_default = assets.font_default if assets.font_default else pygame.font.Font(None, 36)
+
+    # 播放主菜单音乐
+    assets.play_music("Re-Logic - The Journey Begins.mp3", 0.5, -1)
+
+    # Play 按钮
+    button_w, button_h = 200, 50
+    button_x = C.WINDOW_WIDTH * 0.5 - button_w * 0.5
+    button_y = C.WINDOW_HEIGHT * 0.55
+    button_rect = pygame.Rect(button_x, button_y, button_w, button_h)
+
+    running = True
+    while running:
+        mouse_pos = pygame.mouse.get_pos()
+        hover = button_rect.collidepoint(mouse_pos)
+
+        for event in pygame.event.get():
+            if event.type == QUIT:
+                pygame.quit()
+                return False
+            elif event.type == KEYDOWN:
+                if event.key == K_ESCAPE:
+                    pygame.quit()
+                    return False
+                elif event.key == K_RETURN:
+                    return True
+            elif event.type == MOUSEBUTTONDOWN:
+                if event.button == 1 and hover:
+                    return True
+
+        # 绘制
+        screen.fill((20, 20, 60))
+
+        # 标题
+        title_surf = font_title.render("Terraria", True, (255, 255, 255))
+        screen.blit(title_surf, (C.WINDOW_WIDTH * 0.5 - title_surf.get_width() * 0.5,
+                                  C.WINDOW_HEIGHT * 0.25 - title_surf.get_height() * 0.5))
+
+        # 副标题
+        sub_surf = font_default.render("MyTerraria", True, (180, 180, 180))
+        screen.blit(sub_surf, (C.WINDOW_WIDTH * 0.5 - sub_surf.get_width() * 0.5,
+                                C.WINDOW_HEIGHT * 0.35))
+
+        # Play 按钮
+        btn_color = (80, 180, 80) if hover else (50, 130, 50)
+        pygame.draw.rect(screen, btn_color, button_rect, border_radius=8)
+        pygame.draw.rect(screen, (200, 255, 200), button_rect, 2, border_radius=8)
+        play_text = font_default.render("Play", True, (255, 255, 255))
+        screen.blit(play_text, (button_rect.centerx - play_text.get_width() * 0.5,
+                                 button_rect.centery - play_text.get_height() * 0.5))
+
+        pygame.display.flip()
+        clock.tick(C.FPS)
+
+    return False
+
+
+def run(screen):
+    """主游戏函数"""
+    import assets
+
+    clock = pygame.time.Clock()
     font = assets.font_default if assets.font_default else pygame.font.Font(None, 24)
     small_font = assets.font_small if assets.font_small else pygame.font.Font(None, 18)
+
+    # 停止菜单音乐，等 3 秒后播放游戏音乐
+    assets.stop_music()
+    music_start_time = time.time() + 3.0
+    music_started = False
 
     # 创建世界
     print("Generating world...")
@@ -27,6 +97,11 @@ def run(screen):
 
     # 创建玩家
     player = Player(world.spawn_position)
+
+    # 史莱姆管理
+    slimes = []
+    slime_spawn_timer = 3.0  # 首次 3 秒后生成
+    max_slimes = 5
 
     # 摄像机
     cam_x = player.position[0]
@@ -42,6 +117,11 @@ def run(screen):
         if dt > 0.033:
             dt = 0.033
         old_ticks = current_ticks
+
+        # 音乐延迟播放
+        if not music_started and time.time() >= music_start_time:
+            assets.play_music("Scott Lloyd Shelly - Overworld Day.mp3", 0.5, -1)
+            music_started = True
 
         # 鼠标位置 -> 世界方块坐标
         mouse_pos = pygame.mouse.get_pos()
@@ -90,8 +170,28 @@ def run(screen):
             player.mining_target = None
             player.mining_progress = 0
 
+        # 挥剑攻击史莱姆
+        if player.swinging and player.use_cooldown > 0:
+            slot = player.hotbar[player.hotbar_index]
+            if slot is not None:
+                item = C.ITEMS[slot["item_id"]]
+                if item["is_sword"]:
+                    _sword_hit_slimes(player, slimes)
+
         # 更新玩家
         player.update(world, dt)
+
+        # 史莱姆生成
+        slime_spawn_timer -= dt
+        if slime_spawn_timer <= 0 and len(slimes) < max_slimes:
+            slime_spawn_timer = 5.0 + random.random() * 5.0
+            _spawn_slime(slimes, player, world)
+
+        # 更新史莱姆
+        player_pos = player.position
+        for slime in slimes:
+            slime.update(world, player_pos, dt)
+        slimes = [s for s in slimes if s.alive]
 
         # 更新摄像机（跟随玩家）
         cam_x = player.position[0]
@@ -125,6 +225,10 @@ def run(screen):
                 pygame.draw.rect(screen, (100, 100, 100),
                                  (hl_x, hl_y, C.BLOCKSIZE, C.BLOCKSIZE), 1)
 
+        # 史莱姆
+        for slime in slimes:
+            slime.draw(screen, cam_x, cam_y)
+
         # 玩家
         player.draw(screen, cam_x, cam_y)
 
@@ -141,13 +245,70 @@ def run(screen):
 
         # 坐标信息
         coord_text = small_font.render(
-            f"Pos: ({player.block_x}, {player.block_y})", True, (255, 255, 255))
+            f"Pos: ({player.block_x}, {player.block_y})  Slimes: {len(slimes)}", True, (255, 255, 255))
         screen.blit(coord_text, (5, 22))
 
         pygame.display.flip()
         clock.tick(C.FPS)
 
+    assets.stop_music()
     pygame.quit()
+
+
+def _spawn_slime(slimes, player, world):
+    """在玩家附近生成史莱姆"""
+    # 在玩家左右 20-40 格范围、同一高度附近生成
+    side = random.choice([-1, 1])
+    dist = random.randint(20, 40)
+    spawn_x = player.position[0] + side * dist * C.BLOCKSIZE
+
+    # 从上往下找地面
+    bx = int(spawn_x // C.BLOCKSIZE)
+    by = 0
+    for y in range(world.height):
+        if 0 <= bx < world.width and world.tile_data[bx][y] != C.AIR:
+            by = y
+            break
+
+    spawn_y = by * C.BLOCKSIZE - C.BLOCKSIZE
+    if spawn_y <= 0:
+        return
+
+    slime_type = random.randint(0, min(4, 2))  # 0-2 类型（绿/蓝/红）
+    slimes.append(Slime((spawn_x, spawn_y), slime_type))
+
+
+def _sword_hit_slimes(player, slimes):
+    """检测挥剑是否击中史莱姆"""
+    if not player.swinging:
+        return
+    slot = player.hotbar[player.hotbar_index]
+    if slot is None:
+        return
+    item = C.ITEMS[slot["item_id"]]
+    if not item["is_sword"]:
+        return
+
+    # 挥剑判定：玩家前方一定范围内的矩形
+    reach_px = C.PLAYER_REACH * C.BLOCKSIZE * 0.5
+    if player.direction == 1:
+        hit_x = player.position[0] + C.PLAYER_WIDTH * 0.5
+        hit_rect = pygame.Rect(hit_x, player.position[1] - C.PLAYER_HEIGHT * 0.5,
+                                reach_px, C.PLAYER_HEIGHT)
+    else:
+        hit_rect = pygame.Rect(player.position[0] - C.PLAYER_WIDTH * 0.5 - reach_px,
+                                player.position[1] - C.PLAYER_HEIGHT * 0.5,
+                                reach_px, C.PLAYER_HEIGHT)
+
+    for slime in slimes:
+        if not slime.alive:
+            continue
+        if hit_rect.colliderect(slime.rect):
+            slime.damage(item["damage"])
+            # 击退
+            kb_dir = 1 if slime.position[0] > player.position[0] else -1
+            slime.velocity[0] = kb_dir * 15
+            slime.velocity[1] = -20
 
 
 def draw_hotbar(screen, player, font):

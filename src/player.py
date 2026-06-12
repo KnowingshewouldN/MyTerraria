@@ -37,7 +37,16 @@ class Player:
         self.swinging = False
         self.swing_timer = 0.0
         self.swing_duration = 0.3
-        self.swing_progress = 0.0  # 0->1 挥动进度
+        self.swing_progress = 0.0
+
+        # 动画状态（照搬原项目）
+        self.animation_frame = 0  # 身体动画帧
+        self.animation_tick = 0.0
+        self.animation_speed = 0.025
+        self.arm_animation_frame = 0
+        self.arm_animation_tick = 0.0
+        self.arm_animation_speed = 0.015
+        self.swinging_arm = False
 
         # 挖掘状态
         self.mining_target = None  # (tx, ty) 正在挖的方块
@@ -67,7 +76,48 @@ class Player:
             self.swing_progress = 1.0 - max(0, self.swing_timer) / self.swing_duration
             if self.swing_timer <= 0:
                 self.swinging = False
+                self.swinging_arm = False
                 self.swing_progress = 0.0
+
+        # 动画更新（照搬原项目 animate 逻辑）
+        self.animation_tick -= dt
+        if self.animation_tick <= 0:
+            self.animation_tick += self.animation_speed
+            if self.grounded:
+                if self.moving_left:
+                    if self.animation_frame < 29:
+                        self.animation_frame += 1
+                    else:
+                        self.animation_frame = 17
+                elif self.moving_right:
+                    if self.animation_frame < 14:
+                        self.animation_frame += 1
+                    else:
+                        self.animation_frame = 2
+                else:
+                    if self.direction == -1:
+                        self.animation_frame = 15
+                    else:
+                        self.animation_frame = 0
+            else:
+                if self.direction == -1:
+                    self.animation_frame = 16
+                else:
+                    self.animation_frame = 1
+
+        # 手臂动画
+        if self.swinging_arm:
+            self.arm_animation_tick -= dt
+            if self.arm_animation_tick <= 0:
+                self.arm_animation_tick += self.arm_animation_speed
+                if self.direction == 1:
+                    self.arm_animation_frame += 1
+                    if self.arm_animation_frame > 19:
+                        self.arm_animation_frame = 1
+                else:
+                    self.arm_animation_frame += 1
+                    if self.arm_animation_frame > 39:
+                        self.arm_animation_frame = 21
 
         # 水平移动
         old_grounded = self.grounded
@@ -157,9 +207,6 @@ class Player:
                             self.velocity[1] = 0
                     else:
                         if self.velocity[1] > 0:
-                            # 着地时播放音效
-                            if not old_grounded:
-                                _play("tink", 0.3)
                             self.position[1] = block_rect.top - C.PLAYER_HEIGHT * 0.5 + 1
                             self.velocity = [self.velocity[0] * 0.5, 0]
                             self.grounded = True
@@ -275,9 +322,14 @@ class Player:
 
     def _swing_sword(self):
         self.swinging = True
+        self.swinging_arm = True
         self.swing_timer = self.swing_duration
         self.swing_progress = 0.0
         self.use_cooldown = C.ATTACK_COOLDOWN
+        if self.direction == 1:
+            self.arm_animation_frame = 1
+        else:
+            self.arm_animation_frame = 21
         _play("swing", 0.4)
 
     def _add_item(self, item_id, count):
@@ -296,95 +348,75 @@ class Player:
                 return
 
     def draw(self, screen, cam_x, cam_y):
+        """照搬原项目 draw() 逻辑"""
         sx = self.position[0] - cam_x + C.WINDOW_WIDTH * 0.5
         sy = self.position[1] - cam_y + C.WINDOW_HEIGHT * 0.5
 
         try:
-            from assets import torso_frames, hair_frames
-            if torso_frames:
-                self._draw_with_sprites(screen, sx, sy, torso_frames, hair_frames)
+            from assets import player_sprites, player_arm_sprites, get_item_world_surface, rotate_surface
+            if not player_sprites:
+                self._draw_fallback(screen, sx, sy)
                 return
+
+            # 绘制身体（偏移跟原项目一致：-20, -33）
+            if self.animation_frame < len(player_sprites):
+                screen.blit(player_sprites[self.animation_frame], (sx - 20, sy - 33))
+
+            # 绘制手持物品（在手臂之前，只在挥动时显示）
+            if self.swinging:
+                self._draw_held_item_v2(screen, sx, sy, get_item_world_surface, rotate_surface)
+
+            # 绘制手臂
+            if self.arm_animation_frame < len(player_arm_sprites):
+                screen.blit(player_arm_sprites[self.arm_animation_frame], (sx - 20, sy - 33))
         except Exception:
-            pass
-        self._draw_fallback(screen, sx, sy)
+            self._draw_fallback(screen, sx, sy)
 
-    def _draw_with_sprites(self, screen, sx, sy, torso_frames, hair_frames):
-        # 身体帧选择
-        if self.direction == 1:
-            row = 0 if self.grounded else 2
-        else:
-            row = 1 if self.grounded else 3
-
-        if abs(self.velocity[0]) > 1 and self.grounded:
-            anim_frame = int(pygame.time.get_ticks() / 150) % 4 + 1
-        else:
-            anim_frame = 0
-
-        frame_index = row * 19 + min(anim_frame, 18)
-        if frame_index < len(torso_frames):
-            torso_surf = torso_frames[frame_index]
-            tw, th = torso_surf.get_size()
-            if self.direction == -1:
-                torso_surf = pygame.transform.flip(torso_surf, True, False)
-            # 匹配原项目偏移：身体中心偏上
-            screen.blit(torso_surf, (sx - tw * 0.5, sy - th * 0.5))
-
-        # 头发
-        if len(hair_frames) > 0:
-            hair_surf = hair_frames[0]
-            hw, hh = hair_surf.get_size()
-            if self.direction == -1:
-                hair_surf = pygame.transform.flip(hair_surf, True, False)
-            screen.blit(hair_surf, (sx - hw * 0.5, sy - C.PLAYER_HEIGHT * 0.5 - hh + 4))
-
-        # 手持物品挥动动画（参考原项目的弧形旋转）
-        self._draw_held_item(screen, sx, sy)
-
-    def _draw_held_item(self, screen, sx, sy):
-        """绘制手持物品，挥动时弧形旋转"""
+    def _draw_held_item_v2(self, screen, sx, sy, get_item_world_surface, rotate_surface):
+        """手持物品渲染 - 照搬原项目 item_swing 逻辑"""
         slot = self.hotbar[self.hotbar_index]
         if slot is None:
             return
 
         item_id = slot["item_id"]
-        try:
-            from assets import get_item_surface
-            item_surf = get_item_surface(item_id)
-        except Exception:
-            return
+        item_surf = get_item_world_surface(item_id)
         if item_surf is None:
             return
 
-        # 放大到手持大小
-        item_size = 24
-        item_surf = pygame.transform.scale(item_surf.copy(), (item_size, item_size))
-
         if self.swinging:
-            # 弧形挥动动画（参考原项目）
+            # ease-out 挥动
             progress = self.swing_progress
-            # ease-out 曲线
-            eased = 1.0 - (1.0 - progress) ** 2
+            eased = math.sin(progress * math.pi * 0.5)  # ease_out_zero_to_one
+            less_eased = progress + (eased - progress) * 0.7
 
             if self.direction == 1:
-                swing_angle = -eased * 175 + 85
-                hand_angle_deg = -130 + eased * 175
+                swing_angle = -less_eased * 175 + 85
             else:
-                swing_angle = eased * 175 + 5
-                hand_angle_deg = 130 - eased * 175
+                swing_angle = less_eased * 175 + 5
                 item_surf = pygame.transform.flip(item_surf, True, False)
 
-            rotated = pygame.transform.rotate(item_surf, swing_angle)
-            hand_angle_rad = hand_angle_deg * (math.pi / 180)
+            rotated = rotate_surface(item_surf, swing_angle)
             arm_len = 20
-            ox = math.cos(hand_angle_rad) * arm_len - rotated.get_width() * 0.5
-            oy = math.sin(hand_angle_rad) * arm_len - rotated.get_height() * 0.5
+
+            if self.direction == 1:
+                hand_angle_deg = -130 + less_eased * 175
+                hand_angle_rad = hand_angle_deg * (math.pi / 180)
+                ox = math.cos(hand_angle_rad) * arm_len - rotated.get_width() * 0.5 - 5
+                oy = math.sin(hand_angle_rad) * arm_len - rotated.get_height() * 0.5 + 2
+            else:
+                hand_angle_deg = 130 - less_eased * 175
+                hand_angle_rad = hand_angle_deg * (math.pi / 180)
+                ox = -math.cos(hand_angle_rad) * arm_len - rotated.get_width() * 0.5 + 5
+                oy = -math.sin(hand_angle_rad) * arm_len - rotated.get_height() * 0.5 + 2
+
             screen.blit(rotated, (sx + ox, sy + oy))
         else:
-            # 静止时显示在身体侧边
+            # 静止时手臂前伸
             if self.direction == -1:
                 item_surf = pygame.transform.flip(item_surf, True, False)
-            screen.blit(item_surf, (sx + self.direction * 12 - item_surf.get_width() * 0.5,
-                                     sy - 10 - item_surf.get_height() * 0.5))
+            offset_x = -10 if self.direction == 1 else 10
+            screen.blit(item_surf, (sx + offset_x - item_surf.get_width() * 0.5,
+                                     sy - item_surf.get_height() * 0.5))
 
     def _draw_fallback(self, screen, sx, sy):
         body_w = C.PLAYER_WIDTH
@@ -393,7 +425,6 @@ class Player:
                          (sx - body_w * 0.5, sy - body_h * 0.5, body_w, body_h * 0.6))
         pygame.draw.rect(screen, (100, 70, 50),
                          (sx - body_w * 0.5, sy - body_h * 0.5 + body_h * 0.6, body_w, body_h * 0.4))
-        self._draw_held_item(screen, sx, sy)
 
     def draw_mining_progress(self, screen, cam_x, cam_y):
         """绘制挖掘进度条"""

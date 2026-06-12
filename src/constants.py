@@ -103,14 +103,15 @@ def get_tile_surface(tile_id, size=BLOCKSIZE):
 
 
 def get_item_icon(item_id, size=32):
-    """获取物品图标表面。优先使用精灵图，找不到则用纯色矩形备用。"""
+    """获取物品图标表面。已扣掉品红背景。"""
     try:
         from assets import get_item_surface
         surf = get_item_surface(item_id)
         if surf is not None:
             icon_size = min(size - 8, 32)
-            surf = pygame.transform.scale(surf, (icon_size, icon_size))
-            return surf
+            scaled = pygame.transform.scale(surf, (icon_size, icon_size))
+            scaled.set_colorkey((255, 0, 255))
+            return scaled
     except Exception:
         pass
     # 备用：纯色矩形

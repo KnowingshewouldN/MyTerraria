@@ -10,4 +10,5 @@ screen = pygame.display.set_mode((1280, 720))
 pygame.display.set_caption("MyTerraria")
 
 import game
-game.run(screen)
+if game.run_menu(screen):
+    game.run(screen)
