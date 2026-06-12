@@ -152,7 +152,7 @@ def create_tree(world, base_x, surface_y, height):
 
 
 def create_terrain_surface(world):
-    """创建地形渲染 Surface（纯色矩形版本）"""
+    """创建地形渲染 Surface（使用精灵图或纯色矩形）"""
     terrain = pygame.Surface((world.width * C.BLOCKSIZE, world.height * C.BLOCKSIZE))
     terrain.fill(C.SKY_COLOR)
     terrain.set_colorkey(C.SKY_COLOR)
@@ -176,7 +176,7 @@ def update_tile(terrain_surface, world, x, y):
     pixel_x = x * C.BLOCKSIZE
     pixel_y = y * C.BLOCKSIZE
 
-    # 先用天空色清除该区域
+    # 清除该区域（用透明色）
     pygame.draw.rect(terrain_surface, C.SKY_COLOR, (pixel_x, pixel_y, C.BLOCKSIZE, C.BLOCKSIZE))
 
     # 绘制新方块
@@ -185,3 +185,10 @@ def update_tile(terrain_surface, world, x, y):
         tile_surf = C.get_tile_surface(tile_id)
         if tile_surf:
             terrain_surface.blit(tile_surf, (pixel_x, pixel_y))
+
+    # 也更新相邻方块（确保边缘正确）
+    for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+        nx, ny = x + dx, y + dy
+        if tile_in_map(world, nx, ny):
+            # 不需要重绘相邻方块，因为简单版本没有遮罩
+            pass

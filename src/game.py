@@ -9,9 +9,13 @@ from player import Player
 
 def run(screen):
     """主游戏函数"""
+    # 初始化资源加载
+    import assets
+    assets.init()
+
     clock = pygame.time.Clock()
-    font = pygame.font.Font(None, 24)
-    small_font = pygame.font.Font(None, 18)
+    font = assets.font_default if assets.font_default else pygame.font.Font(None, 24)
+    small_font = assets.font_small if assets.font_small else pygame.font.Font(None, 18)
 
     # 创建世界
     print("Generating world...")
@@ -141,30 +145,38 @@ def run(screen):
 
 def draw_hotbar(screen, player, font):
     """绘制快捷栏"""
+    import assets
+
     slot_size = 44
     padding = 4
     start_x = C.WINDOW_WIDTH * 0.5 - (C.HOTBAR_SIZE * (slot_size + padding)) * 0.5
     start_y = C.WINDOW_HEIGHT - slot_size - 10
 
     for i in range(C.HOTBAR_SIZE):
-        x = start_x + i * (slot_size + padding)
-        y = start_y
+        x = int(start_x + i * (slot_size + padding))
+        y = int(start_y)
 
-        # 槽位背景
-        bg_color = (60, 60, 60) if i != player.hotbar_index else (90, 90, 90)
-        pygame.draw.rect(screen, bg_color, (x, y, slot_size, slot_size))
+        # 尝试使用 GUI 精灵
+        if i == player.hotbar_index and assets.get_gui_selected_slot_surface():
+            screen.blit(assets.get_gui_selected_slot_surface(), (x - 2, y - 2))
+        elif assets.get_gui_slot_surface():
+            screen.blit(assets.get_gui_slot_surface(), (x - 2, y - 2))
+        else:
+            # 备用矩形
+            bg_color = (60, 60, 60) if i != player.hotbar_index else (90, 90, 90)
+            pygame.draw.rect(screen, bg_color, (x, y, slot_size, slot_size))
+            border_color = C.SLOT_SELECTED_COLOR if i == player.hotbar_index else C.SLOT_BORDER_COLOR
+            border_width = 2 if i == player.hotbar_index else 1
+            pygame.draw.rect(screen, border_color, (x, y, slot_size, slot_size), border_width)
 
-        # 边框
-        border_color = C.SLOT_SELECTED_COLOR if i == player.hotbar_index else C.SLOT_BORDER_COLOR
-        border_width = 2 if i == player.hotbar_index else 1
-        pygame.draw.rect(screen, border_color, (x, y, slot_size, slot_size), border_width)
-
-        # 物品
+        # 物品图标
         slot = player.hotbar[i]
         if slot is not None:
             icon = C.get_item_icon(slot["item_id"], size=slot_size - 8)
             if icon:
-                screen.blit(icon, (x + 4, y + 4))
+                icon_x = x + (slot_size - icon.get_width()) * 0.5
+                icon_y = y + (slot_size - icon.get_height()) * 0.5
+                screen.blit(icon, (icon_x, icon_y))
             if slot["count"] > 1:
                 count_text = font.render(str(slot["count"]), True, (255, 255, 255))
                 screen.blit(count_text, (x + slot_size - count_text.get_width() - 2,

@@ -279,35 +279,87 @@ class Player:
         sx = self.position[0] - cam_x + C.WINDOW_WIDTH * 0.5
         sy = self.position[1] - cam_y + C.WINDOW_HEIGHT * 0.5
 
-        # 身体（蓝色上衣 + 棕色裤子）
-        body_w = C.PLAYER_WIDTH
-        body_h = C.PLAYER_HEIGHT
+        # 尝试使用精灵图
+        try:
+            from assets import torso_frames, hair_frames
+            if torso_frames:
+                self._draw_with_sprites(screen, sx, sy, torso_frames, hair_frames)
+                return
+        except Exception:
+            pass
 
-        # 上半身
-        pygame.draw.rect(screen, (70, 130, 180),
-                         (sx - body_w * 0.5, sy - body_h * 0.5, body_w, body_h * 0.6))
-        # 下半身（裤子）
-        pygame.draw.rect(screen, (100, 70, 50),
-                         (sx - body_w * 0.5, sy - body_h * 0.5 + body_h * 0.6, body_w, body_h * 0.4))
-        # 头部
-        pygame.draw.rect(screen, (230, 190, 150),
-                         (sx - 8, sy - body_h * 0.5 - 10, 16, 12))
-        # 眼睛
-        eye_x = sx + 3 * self.direction
-        pygame.draw.rect(screen, (0, 0, 0), (eye_x - 1, sy - body_h * 0.5 - 6, 3, 3))
+        # 备用：纯色矩形
+        self._draw_fallback(screen, sx, sy)
+
+    def _draw_with_sprites(self, screen, sx, sy, torso_frames, hair_frames):
+        """使用精灵图绘制玩家"""
+        # 身体帧选择
+        # torso_frames: 19列 x 4行 = 76帧
+        # 行 0-1: 朝右, 行 2-3: 朝左
+        # 每行 19 帧: 站立(0), 走路动画(1-18)
+        if self.direction == 1:  # 朝右
+            row = 0 if self.grounded else 2
+        else:  # 朝左
+            row = 1 if self.grounded else 3
+
+        # 简单走路动画：移动时在几帧间切换
+        if abs(self.velocity[0]) > 1 and self.grounded:
+            anim_frame = int(pygame.time.get_ticks() / 150) % 4 + 1
+        else:
+            anim_frame = 0
+
+        frame_index = row * 19 + min(anim_frame, 18)
+        if frame_index < len(torso_frames):
+            torso_surf = torso_frames[frame_index]
+            # 精灵大小约 40x60 (20x30 scale 2x)
+            tw, th = torso_surf.get_size()
+            # 翻转朝左
+            if self.direction == -1:
+                torso_surf = pygame.transform.flip(torso_surf, True, False)
+            screen.blit(torso_surf, (sx - tw * 0.5, sy - th * 0.5))
+
+        # 头发
+        hair_index = 0  # 默认第一个发型
+        if hair_index < len(hair_frames):
+            hair_surf = hair_frames[hair_index]
+            hw, hh = hair_surf.get_size()
+            if self.direction == -1:
+                hair_surf = pygame.transform.flip(hair_surf, True, False)
+            screen.blit(hair_surf, (sx - hw * 0.5, sy - C.PLAYER_HEIGHT * 0.5 - hh + 4))
 
         # 挥剑动画
         if self.swinging:
-            sword_len = 30
-            angle = -0.5 + (1.0 - self.swing_timer / self.swing_duration) * 1.5
-            if self.direction == -1:
-                angle = math.pi - angle
-            arm_x = sx + 8 * self.direction
-            arm_y = sy - body_h * 0.25
-            end_x = arm_x + math.cos(angle) * sword_len
-            end_y = arm_y + math.sin(angle) * sword_len
-            pygame.draw.line(screen, (200, 200, 200), (arm_x, arm_y), (end_x, end_y), 3)
-            pygame.draw.line(screen, (255, 255, 100), (arm_x, arm_y), (end_x, end_y), 1)
+            self._draw_sword_swing(screen, sx, sy)
+
+    def _draw_fallback(self, screen, sx, sy):
+        """备用纯色矩形绘制"""
+        body_w = C.PLAYER_WIDTH
+        body_h = C.PLAYER_HEIGHT
+
+        pygame.draw.rect(screen, (70, 130, 180),
+                         (sx - body_w * 0.5, sy - body_h * 0.5, body_w, body_h * 0.6))
+        pygame.draw.rect(screen, (100, 70, 50),
+                         (sx - body_w * 0.5, sy - body_h * 0.5 + body_h * 0.6, body_w, body_h * 0.4))
+        pygame.draw.rect(screen, (230, 190, 150),
+                         (sx - 8, sy - body_h * 0.5 - 10, 16, 12))
+        eye_x = sx + 3 * self.direction
+        pygame.draw.rect(screen, (0, 0, 0), (eye_x - 1, sy - body_h * 0.5 - 6, 3, 3))
+
+        if self.swinging:
+            self._draw_sword_swing(screen, sx, sy)
+
+    def _draw_sword_swing(self, screen, sx, sy):
+        """绘制挥剑动画"""
+        sword_len = 30
+        angle = -0.5 + (1.0 - self.swing_timer / self.swing_duration) * 1.5
+        if self.direction == -1:
+            angle = math.pi - angle
+        arm_x = sx + 8 * self.direction
+        arm_y = sy - C.PLAYER_HEIGHT * 0.25
+        end_x = arm_x + math.cos(angle) * sword_len
+        end_y = arm_y + math.sin(angle) * sword_len
+        pygame.draw.line(screen, (200, 200, 200), (arm_x, arm_y), (end_x, end_y), 3)
+        pygame.draw.line(screen, (255, 255, 100), (arm_x, arm_y), (end_x, end_y), 1)
 
 
 # 从 world 模块导入需要的函数（放在文件末尾避免循环导入）

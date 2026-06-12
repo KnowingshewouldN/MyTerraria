@@ -78,7 +78,17 @@ HEALTH_BAR_FG = (220, 30, 30)
 
 
 def get_tile_surface(tile_id, size=BLOCKSIZE):
-    """获取方块的绘制表面。第一版返回纯色矩形，后续可改为加载精灵图。"""
+    """获取方块的绘制表面。优先使用精灵图，找不到则用纯色矩形备用。"""
+    try:
+        from assets import get_tile_surface as _get_sprite
+        surf = _get_sprite(tile_id)
+        if surf is not None:
+            if surf.get_size() != (size, size):
+                surf = pygame.transform.scale(surf, (size, size))
+            return surf
+    except Exception:
+        pass
+    # 备用：纯色矩形
     tile = TILES.get(tile_id)
     if tile is None or tile["color"] is None:
         return None
@@ -88,10 +98,20 @@ def get_tile_surface(tile_id, size=BLOCKSIZE):
 
 
 def get_item_icon(item_id, size=32):
-    """获取物品图标表面。第一版返回纯色矩形，后续可改为加载精灵图。"""
+    """获取物品图标表面。优先使用精灵图，找不到则用纯色矩形备用。"""
+    try:
+        from assets import get_item_surface
+        surf = get_item_surface(item_id)
+        if surf is not None:
+            icon_size = min(size - 8, 32)
+            surf = pygame.transform.scale(surf, (icon_size, icon_size))
+            return surf
+    except Exception:
+        pass
+    # 备用：纯色矩形
     item = ITEMS.get(item_id)
     if item is None:
         return None
-    surf = pygame.Surface((size - 8, size - 8))
+    surf = pygame.Surface((min(size - 8, 32), min(size - 8, 32)))
     surf.fill(item["color"])
     return surf
