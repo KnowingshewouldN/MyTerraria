@@ -1,0 +1,21 @@
+import sys
+sys.path.insert(0, 'src')
+import constants as C
+from world import World, generate_terrain, create_terrain_surface
+print('Creating world...')
+world = World()
+generate_terrain(world)
+print('Creating terrain surface...')
+terrain = create_terrain_surface(world)
+print(f'World size: {world.width}x{world.height}')
+print(f'Spawn pos: {world.spawn_position}')
+print(f'Terrain surface size: {terrain.get_size()}')
+air = sum(1 for x in range(world.width) for y in range(world.height) if world.tile_data[x][y] == 0)
+grass = sum(1 for x in range(world.width) for y in range(world.height) if world.tile_data[x][y] == 1)
+dirt = sum(1 for x in range(world.width) for y in range(world.height) if world.tile_data[x][y] == 2)
+stone = sum(1 for x in range(world.width) for y in range(world.height) if world.tile_data[x][y] == 3)
+wood = sum(1 for x in range(world.width) for y in range(world.height) if world.tile_data[x][y] == 4)
+copper = sum(1 for x in range(world.width) for y in range(world.height) if world.tile_data[x][y] == 5)
+leaves = sum(1 for x in range(world.width) for y in range(world.height) if world.tile_data[x][y] == 6)
+print(f'Air: {air}, Grass: {grass}, Dirt: {dirt}, Stone: {stone}, Wood: {wood}, Copper: {copper}, Leaves: {leaves}')
+print('All OK!')
