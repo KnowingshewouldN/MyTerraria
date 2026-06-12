@@ -82,9 +82,13 @@ def run(screen):
                 elif event.button == 5:  # 滚轮下
                     player.hotbar_index = (player.hotbar_index + 1) % C.HOTBAR_SIZE
 
-        # 鼠标持续按下：持续使用物品
+        # 鼠标持续按下：持续使用物品（传递 dt 用于挖掘进度）
         if pygame.mouse.get_pressed()[0]:
-            player.use_item(world, mouse_tile, terrain_surface)
+            player.use_item(world, mouse_tile, terrain_surface, dt)
+        else:
+            # 松开鼠标重置挖掘进度
+            player.mining_target = None
+            player.mining_progress = 0
 
         # 更新玩家
         player.update(world, dt)
@@ -123,6 +127,9 @@ def run(screen):
 
         # 玩家
         player.draw(screen, cam_x, cam_y)
+
+        # 挖掘进度条
+        player.draw_mining_progress(screen, cam_x, cam_y)
 
         # ===== UI =====
         draw_hotbar(screen, player, font)

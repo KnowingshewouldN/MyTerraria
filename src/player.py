@@ -7,7 +7,7 @@ from pygame.locals import Rect
 
 class Player:
     def __init__(self, position):
-        self.position = list(position)  # [x, y] 像素坐标，中心点
+        self.position = list(position)
         self.velocity = [0.0, 0.0]
         self.rect = Rect(0, 0, C.PLAYER_WIDTH, C.PLAYER_HEIGHT)
         self._update_rect()
@@ -36,7 +36,16 @@ class Player:
         self.use_cooldown = 0.0
         self.swinging = False
         self.swing_timer = 0.0
-        self.swing_duration = 0.2
+        self.swing_duration = 0.3
+        self.swing_progress = 0.0  # 0->1 挥动进度
+
+        # 挖掘状态
+        self.mining_target = None  # (tx, ty) 正在挖的方块
+        self.mining_progress = 0.0  # 0->1 挖掘进度
+        self.mining_time = 0.4  # 挖一个方块需要的秒数
+
+        # 走路音效
+        self.run_sound_timer = 0.0
 
         # 方块坐标缓存
         self.block_x = 0
@@ -55,10 +64,13 @@ class Player:
             self.use_cooldown -= dt
         if self.swinging:
             self.swing_timer -= dt
+            self.swing_progress = 1.0 - max(0, self.swing_timer) / self.swing_duration
             if self.swing_timer <= 0:
                 self.swinging = False
+                self.swing_progress = 0.0
 
         # 水平移动
+        old_grounded = self.grounded
         if self.moving_left:
             speed = -5.0 if self.moving_down else -C.PLAYER_SPEED
             self.velocity[0] = speed
@@ -78,7 +90,6 @@ class Player:
         self.position[1] += self.velocity[1] * dt * C.BLOCKSIZE
         self._update_rect()
 
-        # 方块坐标
         self.block_x = int(self.position[0] // C.BLOCKSIZE)
         self.block_y = int(self.position[1] // C.BLOCKSIZE)
 
@@ -102,26 +113,21 @@ class Player:
             self.velocity[1] = 0
             self.grounded = True
 
-        # 碰撞检测 - 检查周围 5x5 格子
+        # 碰撞检测
         for dy in range(-2, 3):
             for dx in range(-2, 3):
                 tx = self.block_x + dx
                 ty = self.block_y + dy
-
-                if not tile_in_map(world, tx, ty):
-                    continue
-                if ty < 0:
+                if not tile_in_map(world, tx, ty) or ty < 0:
                     continue
 
                 tile_id = world.tile_data[tx][ty]
                 tile_info = C.TILES.get(tile_id)
 
                 if tile_info is None or not tile_info["solid"]:
-                    # 平台特殊处理
                     if tile_id == 7:  # Platform
                         block_rect = Rect(tx * C.BLOCKSIZE, ty * C.BLOCKSIZE, C.BLOCKSIZE, C.BLOCKSIZE)
                         if block_rect.colliderect(self.rect):
-                            # 只从上方碰撞
                             if self.velocity[1] > 0:
                                 if self.position[1] + C.PLAYER_HEIGHT * 0.5 <= ty * C.BLOCKSIZE + 4:
                                     if not self.moving_down:
@@ -135,7 +141,6 @@ class Player:
                 if not block_rect.colliderect(self.rect):
                     continue
 
-                # 计算推离方向
                 delta_x = self.position[0] - block_rect.centerx
                 delta_y = self.position[1] - block_rect.centery
 
@@ -147,28 +152,36 @@ class Player:
                     self.velocity[0] = 0
                 else:
                     if delta_y > 0:
-                        # 头顶碰撞
                         if self.velocity[1] < 0:
                             self.position[1] = block_rect.bottom + C.PLAYER_HEIGHT * 0.5
                             self.velocity[1] = 0
                     else:
-                        # 脚下碰撞（着地）
                         if self.velocity[1] > 0:
+                            # 着地时播放音效
+                            if not old_grounded:
+                                _play("tink", 0.3)
                             self.position[1] = block_rect.top - C.PLAYER_HEIGHT * 0.5 + 1
                             self.velocity = [self.velocity[0] * 0.5, 0]
                             self.grounded = True
                 self._update_rect()
 
+        # 走路音效
+        if self.grounded and abs(self.velocity[0]) > 2:
+            self.run_sound_timer -= dt
+            if self.run_sound_timer <= 0:
+                _play("run", 0.15)
+                self.run_sound_timer = 0.35
+        else:
+            self.run_sound_timer = 0
+
     def jump(self):
         if self.grounded:
             self.velocity[1] = C.JUMP_VELOCITY
             self.grounded = False
+            _play("jump", 0.3)
 
-    def use_item(self, world, mouse_tile, terrain_surface):
-        """根据手持物品执行操作"""
-        if self.use_cooldown > 0:
-            return
-
+    def use_item(self, world, mouse_tile, terrain_surface, dt):
+        """根据手持物品执行操作，dt 用于挖掘进度"""
         slot = self.hotbar[self.hotbar_index]
         if slot is None:
             return
@@ -178,17 +191,17 @@ class Player:
         tx, ty = mouse_tile
 
         if item["is_pickaxe"]:
-            self._mine_block(world, tx, ty, terrain_surface)
+            self._mine_block(world, tx, ty, terrain_surface, dt)
         elif item["is_sword"]:
-            self._swing_sword()
+            if self.use_cooldown <= 0:
+                self._swing_sword()
         elif item["is_block"]:
-            self._place_block(world, tx, ty, item["place_tile"], terrain_surface)
+            if self.use_cooldown <= 0:
+                self._place_block(world, tx, ty, item["place_tile"], terrain_surface)
 
-    def _mine_block(self, world, tx, ty, terrain_surface):
+    def _mine_block(self, world, tx, ty, terrain_surface, dt):
         if not tile_in_map(world, tx, ty):
             return
-
-        # 距离检查
         dx = tx - self.block_x
         dy = ty - self.block_y
         if math.sqrt(dx * dx + dy * dy) > C.PLAYER_REACH:
@@ -196,68 +209,78 @@ class Player:
 
         tile_id = world.tile_data[tx][ty]
         if tile_id == C.AIR:
+            self.mining_target = None
+            self.mining_progress = 0
             return
 
-        tile_info = C.TILES[tile_id]
-        drop_item_id = tile_info["drop_item"]
+        # 如果换了目标方块，重置进度
+        if self.mining_target != (tx, ty):
+            self.mining_target = (tx, ty)
+            self.mining_progress = 0
 
-        # 移除方块
-        world.tile_data[tx][ty] = C.AIR
-        update_tile(terrain_surface, world, tx, ty)
-
-        # 添加掉落物到快捷栏
-        if drop_item_id is not None:
-            self._add_item(drop_item_id, 1)
-
-        self.use_cooldown = C.MINE_COOLDOWN
+        # 累积挖掘进度
+        self.mining_progress += dt / self.mining_time
         self.swinging = True
         self.swing_timer = self.swing_duration
+        self.swing_progress = min(1.0, self.mining_progress)
+
+        # 挖掘中播放音效（每隔一段时间）
+        if int(self.mining_progress * 5) != int((self.mining_progress - dt / self.mining_time) * 5):
+            _play("dig", 0.3)
+
+        # 挖掘完成
+        if self.mining_progress >= 1.0:
+            tile_info = C.TILES[tile_id]
+            drop_item_id = tile_info["drop_item"]
+
+            world.tile_data[tx][ty] = C.AIR
+            update_tile(terrain_surface, world, tx, ty)
+
+            if drop_item_id is not None:
+                self._add_item(drop_item_id, 1)
+
+            _play("tink", 0.4)
+            self.mining_target = None
+            self.mining_progress = 0
+            self.use_cooldown = 0.1
 
     def _place_block(self, world, tx, ty, place_tile, terrain_surface):
         if not tile_in_map(world, tx, ty):
             return
-
-        # 距离检查
         dx = tx - self.block_x
         dy = ty - self.block_y
         if math.sqrt(dx * dx + dy * dy) > C.PLAYER_REACH:
             return
-
-        # 目标格子必须为空
         if world.tile_data[tx][ty] != C.AIR:
             return
-
-        # 必须有至少一个相邻实心方块
         if get_neighbor_count(world, tx, ty) == 0:
             return
 
-        # 不能放在玩家身上
         block_rect = Rect(tx * C.BLOCKSIZE, ty * C.BLOCKSIZE + 1, C.BLOCKSIZE, C.BLOCKSIZE)
         if block_rect.colliderect(self.rect):
             return
 
-        # 放置方块
         world.tile_data[tx][ty] = place_tile
         update_tile(terrain_surface, world, tx, ty)
 
-        # 减少物品数量
         slot = self.hotbar[self.hotbar_index]
         slot["count"] -= 1
         if slot["count"] <= 0:
             self.hotbar[self.hotbar_index] = None
 
-        self.use_cooldown = C.MINE_COOLDOWN
+        self.use_cooldown = C.PLACE_COOLDOWN
         self.swinging = True
         self.swing_timer = self.swing_duration
+        _play("tink", 0.25)
 
     def _swing_sword(self):
         self.swinging = True
         self.swing_timer = self.swing_duration
+        self.swing_progress = 0.0
         self.use_cooldown = C.ATTACK_COOLDOWN
+        _play("swing", 0.4)
 
     def _add_item(self, item_id, count):
-        """添加物品到快捷栏"""
-        # 先尝试堆叠到已有的同类物品
         for i, slot in enumerate(self.hotbar):
             if slot is not None and slot["item_id"] == item_id:
                 item_info = C.ITEMS[item_id]
@@ -267,19 +290,15 @@ class Player:
                     count -= can_add
                     if count <= 0:
                         return
-
-        # 放到空槽位
         for i, slot in enumerate(self.hotbar):
             if slot is None:
                 self.hotbar[i] = {"item_id": item_id, "count": count}
                 return
 
     def draw(self, screen, cam_x, cam_y):
-        """绘制玩家"""
         sx = self.position[0] - cam_x + C.WINDOW_WIDTH * 0.5
         sy = self.position[1] - cam_y + C.WINDOW_HEIGHT * 0.5
 
-        # 尝试使用精灵图
         try:
             from assets import torso_frames, hair_frames
             if torso_frames:
@@ -287,22 +306,15 @@ class Player:
                 return
         except Exception:
             pass
-
-        # 备用：纯色矩形
         self._draw_fallback(screen, sx, sy)
 
     def _draw_with_sprites(self, screen, sx, sy, torso_frames, hair_frames):
-        """使用精灵图绘制玩家"""
         # 身体帧选择
-        # torso_frames: 19列 x 4行 = 76帧
-        # 行 0: 朝右站立/走路, 行 1: 朝左站立/走路
-        # 行 2: 朝右跳跃, 行 3: 朝左跳跃
         if self.direction == 1:
             row = 0 if self.grounded else 2
         else:
             row = 1 if self.grounded else 3
 
-        # 走路动画
         if abs(self.velocity[0]) > 1 and self.grounded:
             anim_frame = int(pygame.time.get_ticks() / 150) % 4 + 1
         else:
@@ -314,26 +326,22 @@ class Player:
             tw, th = torso_surf.get_size()
             if self.direction == -1:
                 torso_surf = pygame.transform.flip(torso_surf, True, False)
+            # 匹配原项目偏移：身体中心偏上
             screen.blit(torso_surf, (sx - tw * 0.5, sy - th * 0.5))
 
         # 头发
-        hair_index = 0
-        if hair_index < len(hair_frames):
-            hair_surf = hair_frames[hair_index]
+        if len(hair_frames) > 0:
+            hair_surf = hair_frames[0]
             hw, hh = hair_surf.get_size()
             if self.direction == -1:
                 hair_surf = pygame.transform.flip(hair_surf, True, False)
             screen.blit(hair_surf, (sx - hw * 0.5, sy - C.PLAYER_HEIGHT * 0.5 - hh + 4))
 
-        # 手持物品渲染
+        # 手持物品挥动动画（参考原项目的弧形旋转）
         self._draw_held_item(screen, sx, sy)
 
-        # 挥剑动画
-        if self.swinging:
-            self._draw_sword_swing(screen, sx, sy)
-
     def _draw_held_item(self, screen, sx, sy):
-        """绘制手持物品"""
+        """绘制手持物品，挥动时弧形旋转"""
         slot = self.hotbar[self.hotbar_index]
         if slot is None:
             return
@@ -344,62 +352,72 @@ class Player:
             item_surf = get_item_surface(item_id)
         except Exception:
             return
-
         if item_surf is None:
             return
 
-        # 手持物品位置（在身体侧面）
-        item_size = 20
-        item_surf = pygame.transform.scale(item_surf, (item_size, item_size))
-        if self.direction == -1:
-            item_surf = pygame.transform.flip(item_surf, True, False)
+        # 放大到手持大小
+        item_size = 24
+        item_surf = pygame.transform.scale(item_surf.copy(), (item_size, item_size))
 
-        # 挥动时的偏移
         if self.swinging:
-            swing_progress = 1.0 - self.swing_timer / self.swing_duration
-            angle = -30 + swing_progress * 120
-            if self.direction == -1:
-                angle = -angle
-            item_surf = pygame.transform.rotate(item_surf, angle)
-            offset_y = -10 + swing_progress * 5
-        else:
-            angle = 0
-            offset_y = -5
+            # 弧形挥动动画（参考原项目）
+            progress = self.swing_progress
+            # ease-out 曲线
+            eased = 1.0 - (1.0 - progress) ** 2
 
-        hand_x = sx + self.direction * 14 - item_surf.get_width() * 0.5
-        hand_y = sy - 8 + offset_y - item_surf.get_height() * 0.5
-        screen.blit(item_surf, (hand_x, hand_y))
+            if self.direction == 1:
+                swing_angle = -eased * 175 + 85
+                hand_angle_deg = -130 + eased * 175
+            else:
+                swing_angle = eased * 175 + 5
+                hand_angle_deg = 130 - eased * 175
+                item_surf = pygame.transform.flip(item_surf, True, False)
+
+            rotated = pygame.transform.rotate(item_surf, swing_angle)
+            hand_angle_rad = hand_angle_deg * (math.pi / 180)
+            arm_len = 20
+            ox = math.cos(hand_angle_rad) * arm_len - rotated.get_width() * 0.5
+            oy = math.sin(hand_angle_rad) * arm_len - rotated.get_height() * 0.5
+            screen.blit(rotated, (sx + ox, sy + oy))
+        else:
+            # 静止时显示在身体侧边
+            if self.direction == -1:
+                item_surf = pygame.transform.flip(item_surf, True, False)
+            screen.blit(item_surf, (sx + self.direction * 12 - item_surf.get_width() * 0.5,
+                                     sy - 10 - item_surf.get_height() * 0.5))
 
     def _draw_fallback(self, screen, sx, sy):
-        """备用纯色矩形绘制"""
         body_w = C.PLAYER_WIDTH
         body_h = C.PLAYER_HEIGHT
-
         pygame.draw.rect(screen, (70, 130, 180),
                          (sx - body_w * 0.5, sy - body_h * 0.5, body_w, body_h * 0.6))
         pygame.draw.rect(screen, (100, 70, 50),
                          (sx - body_w * 0.5, sy - body_h * 0.5 + body_h * 0.6, body_w, body_h * 0.4))
-        pygame.draw.rect(screen, (230, 190, 150),
-                         (sx - 8, sy - body_h * 0.5 - 10, 16, 12))
-        eye_x = sx + 3 * self.direction
-        pygame.draw.rect(screen, (0, 0, 0), (eye_x - 1, sy - body_h * 0.5 - 6, 3, 3))
+        self._draw_held_item(screen, sx, sy)
 
-        if self.swinging:
-            self._draw_sword_swing(screen, sx, sy)
+    def draw_mining_progress(self, screen, cam_x, cam_y):
+        """绘制挖掘进度条"""
+        if self.mining_target is None or self.mining_progress <= 0:
+            return
+        tx, ty = self.mining_target
+        sx = tx * C.BLOCKSIZE - cam_x + C.WINDOW_WIDTH * 0.5
+        sy = ty * C.BLOCKSIZE - cam_y + C.WINDOW_HEIGHT * 0.5
 
-    def _draw_sword_swing(self, screen, sx, sy):
-        """绘制挥剑动画"""
-        sword_len = 30
-        angle = -0.5 + (1.0 - self.swing_timer / self.swing_duration) * 1.5
-        if self.direction == -1:
-            angle = math.pi - angle
-        arm_x = sx + 8 * self.direction
-        arm_y = sy - C.PLAYER_HEIGHT * 0.25
-        end_x = arm_x + math.cos(angle) * sword_len
-        end_y = arm_y + math.sin(angle) * sword_len
-        pygame.draw.line(screen, (200, 200, 200), (arm_x, arm_y), (end_x, end_y), 3)
-        pygame.draw.line(screen, (255, 255, 100), (arm_x, arm_y), (end_x, end_y), 1)
+        # 背景
+        bar_w = C.BLOCKSIZE
+        bar_h = 3
+        pygame.draw.rect(screen, (60, 60, 60), (sx, sy - 6, bar_w, bar_h))
+        # 进度
+        pw = int(bar_w * min(1.0, self.mining_progress))
+        pygame.draw.rect(screen, (255, 255, 0), (sx, sy - 6, pw, bar_h))
 
 
-# 从 world 模块导入需要的函数（放在文件末尾避免循环导入）
+def _play(name, volume=0.4):
+    try:
+        from assets import play_sound
+        play_sound(name, volume)
+    except Exception:
+        pass
+
+
 from world import tile_in_map, get_neighbor_count, update_tile

@@ -70,6 +70,8 @@ HOTBAR_SIZE = 8
 MINE_COOLDOWN = 0.25
 # 攻击冷却（秒）
 ATTACK_COOLDOWN = 0.35
+# 放置冷却（秒）
+PLACE_COOLDOWN = 0.2
 
 # 颜色常量
 SKY_COLOR = (135, 206, 235)
