@@ -295,14 +295,14 @@ class Player:
         """使用精灵图绘制玩家"""
         # 身体帧选择
         # torso_frames: 19列 x 4行 = 76帧
-        # 行 0-1: 朝右, 行 2-3: 朝左
-        # 每行 19 帧: 站立(0), 走路动画(1-18)
-        if self.direction == 1:  # 朝右
+        # 行 0: 朝右站立/走路, 行 1: 朝左站立/走路
+        # 行 2: 朝右跳跃, 行 3: 朝左跳跃
+        if self.direction == 1:
             row = 0 if self.grounded else 2
-        else:  # 朝左
+        else:
             row = 1 if self.grounded else 3
 
-        # 简单走路动画：移动时在几帧间切换
+        # 走路动画
         if abs(self.velocity[0]) > 1 and self.grounded:
             anim_frame = int(pygame.time.get_ticks() / 150) % 4 + 1
         else:
@@ -311,15 +311,13 @@ class Player:
         frame_index = row * 19 + min(anim_frame, 18)
         if frame_index < len(torso_frames):
             torso_surf = torso_frames[frame_index]
-            # 精灵大小约 40x60 (20x30 scale 2x)
             tw, th = torso_surf.get_size()
-            # 翻转朝左
             if self.direction == -1:
                 torso_surf = pygame.transform.flip(torso_surf, True, False)
             screen.blit(torso_surf, (sx - tw * 0.5, sy - th * 0.5))
 
         # 头发
-        hair_index = 0  # 默认第一个发型
+        hair_index = 0
         if hair_index < len(hair_frames):
             hair_surf = hair_frames[hair_index]
             hw, hh = hair_surf.get_size()
@@ -327,9 +325,50 @@ class Player:
                 hair_surf = pygame.transform.flip(hair_surf, True, False)
             screen.blit(hair_surf, (sx - hw * 0.5, sy - C.PLAYER_HEIGHT * 0.5 - hh + 4))
 
+        # 手持物品渲染
+        self._draw_held_item(screen, sx, sy)
+
         # 挥剑动画
         if self.swinging:
             self._draw_sword_swing(screen, sx, sy)
+
+    def _draw_held_item(self, screen, sx, sy):
+        """绘制手持物品"""
+        slot = self.hotbar[self.hotbar_index]
+        if slot is None:
+            return
+
+        item_id = slot["item_id"]
+        try:
+            from assets import get_item_surface
+            item_surf = get_item_surface(item_id)
+        except Exception:
+            return
+
+        if item_surf is None:
+            return
+
+        # 手持物品位置（在身体侧面）
+        item_size = 20
+        item_surf = pygame.transform.scale(item_surf, (item_size, item_size))
+        if self.direction == -1:
+            item_surf = pygame.transform.flip(item_surf, True, False)
+
+        # 挥动时的偏移
+        if self.swinging:
+            swing_progress = 1.0 - self.swing_timer / self.swing_duration
+            angle = -30 + swing_progress * 120
+            if self.direction == -1:
+                angle = -angle
+            item_surf = pygame.transform.rotate(item_surf, angle)
+            offset_y = -10 + swing_progress * 5
+        else:
+            angle = 0
+            offset_y = -5
+
+        hand_x = sx + self.direction * 14 - item_surf.get_width() * 0.5
+        hand_y = sy - 8 + offset_y - item_surf.get_height() * 0.5
+        screen.blit(item_surf, (hand_x, hand_y))
 
     def _draw_fallback(self, screen, sx, sy):
         """备用纯色矩形绘制"""

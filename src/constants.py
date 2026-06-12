@@ -26,14 +26,16 @@ WORLD_HEIGHT = 200
 # 方块定义: id -> {name, color, solid, drop_item}
 # drop_item 为 None 表示不掉落, 为 int 表示掉落的物品 id
 TILES = {
-    0: {"name": "Air",      "color": None,             "solid": False, "drop_item": None},
-    1: {"name": "Grass",    "color": (76, 153, 0),     "solid": True,  "drop_item": 5},   # 掉落草方块物品
-    2: {"name": "Dirt",     "color": (139, 90, 43),    "solid": True,  "drop_item": 2},   # 掉落泥土物品
-    3: {"name": "Stone",    "color": (128, 128, 128),  "solid": True,  "drop_item": 3},   # 掉落石头物品
-    4: {"name": "Wood",     "color": (181, 137, 72),   "solid": True,  "drop_item": 4},   # 掉落木头物品
-    5: {"name": "CopperOre","color": (184, 115, 51),   "solid": True,  "drop_item": 6},   # 掉落铜矿石物品
-    6: {"name": "Leaves",   "color": (34, 120, 15),    "solid": False, "drop_item": None},
-    7: {"name": "Platform", "color": (160, 130, 80),   "solid": False, "drop_item": None},  # platform，只从上方阻挡
+    0: {"name": "Air",       "color": None,             "solid": False, "drop_item": None},
+    1: {"name": "Grass",     "color": (76, 153, 0),     "solid": True,  "drop_item": 5},
+    2: {"name": "Dirt",      "color": (139, 90, 43),    "solid": True,  "drop_item": 2},
+    3: {"name": "Stone",     "color": (128, 128, 128),  "solid": True,  "drop_item": 3},
+    4: {"name": "Wood",      "color": (181, 137, 72),   "solid": True,  "drop_item": 4},
+    5: {"name": "CopperOre", "color": (184, 115, 51),   "solid": True,  "drop_item": 6},
+    6: {"name": "Leaves",    "color": (34, 120, 15),    "solid": False, "drop_item": None},
+    7: {"name": "Platform",  "color": (160, 130, 80),   "solid": False, "drop_item": None},
+    8: {"name": "Trunk",     "color": (120, 80, 40),    "solid": False, "drop_item": 4},  # 树干，可穿过
+    9: {"name": "SilverOre", "color": (192, 192, 192),  "solid": True,  "drop_item": 7},  # 银矿
 }
 
 AIR = 0
@@ -47,6 +49,7 @@ ITEMS = {
     4: {"name": "Wood",           "color": (181, 137, 72), "is_block": True,  "place_tile": 4,    "is_pickaxe": False, "is_sword": False, "damage": 0,  "max_stack": 99},
     5: {"name": "Grass",          "color": (76, 153, 0),   "is_block": True,  "place_tile": 1,    "is_pickaxe": False, "is_sword": False, "damage": 0,  "max_stack": 99},
     6: {"name": "Copper Ore",     "color": (184, 115, 51), "is_block": False, "place_tile": None, "is_pickaxe": False, "is_sword": False, "damage": 0,  "max_stack": 99},
+    7: {"name": "Silver Ore",     "color": (192, 192, 192),"is_block": False, "place_tile": None, "is_pickaxe": False, "is_sword": False, "damage": 0,  "max_stack": 99},
 }
 
 # 默认快捷栏: list of {"item_id": int, "count": int} or None

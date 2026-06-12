@@ -58,58 +58,45 @@ def generate_terrain(world):
     noise_gen = perlin.SimplexNoise()
     offsets = [random.random() * 1000 for _ in range(3)]
 
-    # 计算每列的地表高度
+    # 计算每列的地表高度（崎岖不平）
     surface_heights = []
     for x in range(world.width):
         val = noise_gen.noise2(x / 100 + offsets[2], 0.1)
-        height = int(val * 30 + 60)  # 基础高度约 60，波动 ±30
+        height = int(val * 25 + 65)  # 基础高度约 65，波动 ±25
         surface_heights.append(height)
 
-    # 生成基础地形
+    # 生成基础地形（地下完全填满，无洞穴）
     for x in range(world.width):
         surface_y = surface_heights[x]
         for y in range(world.height):
             if y < surface_y:
                 continue  # 空气
 
-            # 地表层：草方块
             if y == surface_y:
                 world.tile_data[x][y] = 1  # Grass
-            # 泥土层：地表以下约 15 格
-            elif y < surface_y + 15:
+            elif y < surface_y + 12:
                 world.tile_data[x][y] = 2  # Dirt
-            # 石头层
             else:
                 world.tile_data[x][y] = 3  # Stone
 
-    # 挖洞穴 - 在地下区域使用噪声挖空
-    for x in range(world.width):
-        surface_y = surface_heights[x]
-        for y in range(surface_y + 10, world.height):
-            val = noise_gen.noise2(x / 30 + offsets[0], y / 20 + offsets[1])
-            if val > 0.35:
-                world.tile_data[x][y] = C.AIR
-
-    # 小洞穴（浅层）
-    for x in range(world.width):
-        surface_y = surface_heights[x]
-        for y in range(surface_y + 3, min(surface_y + 30, world.height)):
-            val = noise_gen.noise2(x / 15 + offsets[2], y / 12 + offsets[2])
-            if val > 0.5:
-                world.tile_data[x][y] = C.AIR
-
-    # 生成铜矿脉
-    num_veins = int(world.width * world.height / 1500)
-    for _ in range(num_veins):
+    # 生成铜矿脉（地下石头层）
+    num_copper = int(world.width * world.height / 2000)
+    for _ in range(num_copper):
         vx = random.randint(0, world.width - 1)
         vy = random.randint(0, world.height - 1)
-        create_vein(world, vx, vy, 5, random.randint(3, 6))  # CopperOre id=5
+        create_vein(world, vx, vy, 5, random.randint(3, 6))  # CopperOre
 
-    # 生成树木
+    # 生成银矿脉（更深更多）
+    num_silver = int(world.width * world.height / 3000)
+    for _ in range(num_silver):
+        vx = random.randint(0, world.width - 1)
+        vy = random.randint(0, world.height - 1)
+        create_vein(world, vx, vy, 9, random.randint(3, 5))  # SilverOre
+
+    # 生成树木（树干用 Trunk id=8，可穿过）
     for x in range(5, world.width - 5, random.randint(4, 8)):
         if random.random() < 0.6:
             surface_y = surface_heights[x]
-            # 确保是草方块上
             if tile_in_map(world, x, surface_y) and world.tile_data[x][surface_y] == 1:
                 create_tree(world, x, surface_y, random.randint(5, 10))
 
@@ -133,11 +120,11 @@ def create_vein(world, x, y, tile_id, size):
 
 def create_tree(world, base_x, surface_y, height):
     """在指定位置生成一棵树"""
-    # 树干
+    # 树干（用 Trunk id=8，非实心，可穿过）
     for dy in range(1, height + 1):
         ty = surface_y - dy
         if tile_in_map(world, base_x, ty):
-            world.tile_data[base_x][ty] = 4  # Wood
+            world.tile_data[base_x][ty] = 8  # Trunk（非实心）
 
     # 树冠（树叶）
     top_y = surface_y - height

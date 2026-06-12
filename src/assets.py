@@ -51,10 +51,12 @@ def _load_tile_surfaces():
         1: "grass.png",
         2: "dirt.png",
         3: "stone.png",
-        4: "trunk.png",      # 木头方块用树干图
-        5: "copper.png",     # 铜矿
-        6: "leaves.png",     # 树叶
+        4: "wood.png",           # 放置的木头方块
+        5: "copper.png",         # 铜矿
+        6: "leaves.png",         # 树叶
         7: "platform_wood.png",  # 平台
+        8: "trunk.png",          # 树干（可穿过）
+        9: "silver.png",         # 银矿
     }
 
     for tile_id, filename in tile_files.items():
@@ -80,6 +82,7 @@ def _load_item_surfaces():
         4: "wood.png",
         5: "grass.png",
         6: "copper.png",
+        7: "silver.png",
     }
 
     for item_id, filename in item_files.items():
@@ -112,14 +115,16 @@ def _load_torso_surfaces():
         return
 
     scale = 2
-    torso_img = pygame.image.load(filepath).convert_alpha()
+    torso_img = pygame.image.load(filepath).convert()
+    torso_img.set_colorkey((255, 0, 255))
     torso_img = pygame.transform.scale(torso_img,
         (int(20 * 19 * scale), int(30 * 4 * scale)))
 
     torso_frames = []
     for row in range(4):
         for col in range(19):
-            surf = pygame.Surface((int(20 * scale), int(30 * scale)), pygame.SRCALPHA)
+            surf = pygame.Surface((int(20 * scale), int(30 * scale)))
+            surf.set_colorkey((255, 0, 255))
             surf.blit(torso_img, (-col * 20 * scale, -row * 30 * scale))
             torso_frames.append(surf)
 
@@ -132,15 +137,18 @@ def _load_hair_surfaces():
         return
 
     scale = 2
-    hair_img = pygame.image.load(filepath).convert_alpha()
+    hair_img = pygame.image.load(filepath).convert()
+    hair_img.set_colorkey((255, 0, 255))
     hair_img = pygame.transform.scale(hair_img,
         (int(22 * 10 * scale), int(24 * scale)))
 
     hair_frames = []
     for i in range(10):
-        surf = pygame.Surface((int(22 * scale), int(24 * scale)), pygame.SRCALPHA)
+        surf = pygame.Surface((int(22 * scale), int(24 * scale)))
+        surf.set_colorkey((255, 0, 255))
         surf.blit(hair_img, (-i * 22 * scale, 0))
         surf = pygame.transform.scale(surf, (int(20 * scale), int(24 * scale)))
+        surf.set_colorkey((255, 0, 255))
         hair_frames.append(surf)
 
 
