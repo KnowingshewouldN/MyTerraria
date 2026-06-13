@@ -242,6 +242,8 @@ class Player:
         elif item["is_sword"]:
             if self.use_cooldown <= 0:
                 self._swing_sword()
+        elif item.get("is_gun"):
+            return  # 枪在 game.py 中处理（需要鼠标方向）
         elif item["is_block"]:
             if self.use_cooldown <= 0:
                 self._place_block(world, tx, ty, item["place_tile"], terrain_surface)
@@ -346,6 +348,25 @@ class Player:
             if slot is None:
                 self.hotbar[i] = {"item_id": item_id, "count": count}
                 return
+
+    def add_item(self, item_id, count):
+        """公开接口：添加物品到快捷栏"""
+        self._add_item(item_id, count)
+
+    def find_ammo(self, ammo_name):
+        """在快捷栏中查找指定弹药，返回 (slot_index, count) 或 None"""
+        for i, slot in enumerate(self.hotbar):
+            if slot is not None and C.ITEMS[slot["item_id"]]["name"] == ammo_name:
+                return (i, slot["count"])
+        return None
+
+    def consume_ammo(self, slot_index):
+        """消耗指定槽位的弹药 1 个"""
+        slot = self.hotbar[slot_index]
+        if slot and slot["count"] > 1:
+            slot["count"] -= 1
+        elif slot:
+            self.hotbar[slot_index] = None
 
     def draw(self, screen, cam_x, cam_y):
         """照搬原项目 draw() 逻辑"""

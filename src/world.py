@@ -98,14 +98,14 @@ def generate_terrain(world):
                 world.wall_data[x][y] = biome["deep_wall"]
 
     # 铜矿脉（替换石头/冰/砂岩）
-    num_copper = int(world.width * world.height / 2000)
+    num_copper = int(world.width * world.height / 1200)
     for _ in range(num_copper):
         vx = random.randint(0, world.width - 1)
         vy = random.randint(0, world.height - 1)
         create_vein(world, vx, vy, 5, random.randint(3, 6))
 
     # 银矿脉（更深层）
-    num_silver = int(world.width * world.height / 3000)
+    num_silver = int(world.width * world.height / 1800)
     for _ in range(num_silver):
         vx = random.randint(0, world.width - 1)
         vy = random.randint(0, world.height - 1)

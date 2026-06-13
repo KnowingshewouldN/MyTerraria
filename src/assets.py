@@ -73,6 +73,7 @@ def _load_tile_surfaces():
         8: "trunk.png", 9: "silver.png",
         10: "snow.png", 11: "ice.png", 12: "sand.png", 13: "sandstone.png",
         14: "snow_leaves.png",
+        15: "lamp.png",
     }
     for tile_id, filename in tile_files.items():
         filepath = os.path.join(TILES_PATH, filename)
@@ -95,7 +96,8 @@ def _load_wall_surfaces():
             continue
         filepath = os.path.join(ITEMS_PATH, sprite_file)
         if os.path.exists(filepath):
-            img = pygame.image.load(filepath).convert_alpha()
+            img = pygame.image.load(filepath).convert()
+            img.set_colorkey((255, 0, 255))
             if img.get_size() != (16, 16):
                 img = pygame.transform.scale(img, (16, 16))
             wall_surfaces[wall_id] = img
@@ -108,6 +110,8 @@ def _load_item_surfaces():
         0: "copper_pickaxe.png", 1: "sword_copper.png", 2: "dirt.png",
         3: "stone.png", 4: "wood.png", 5: "grass.png", 6: "copper.png",
         7: "silver.png", 8: "sand.png", 9: "snow.png",
+        10: "musket_i.png", 11: "musket_ball.png", 12: "lamp.png",
+        13: "blue_gel.png", 14: "copper_coin.png",
     }
     for item_id, filename in item_files.items():
         filepath = os.path.join(ITEMS_PATH, filename)

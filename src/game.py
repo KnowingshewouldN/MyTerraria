@@ -98,6 +98,9 @@ def run(screen):
     # 创建玩家
     player = Player(world.spawn_position)
 
+    # 弹射体
+    projectiles = []
+
     # 史莱姆管理
     slimes = []
     slime_spawn_timer = 3.0  # 首次 3 秒后生成
@@ -166,7 +169,15 @@ def run(screen):
 
         # 鼠标持续按下：持续使用物品（传递 dt 用于挖掘进度）
         if pygame.mouse.get_pressed()[0]:
-            player.use_item(world, mouse_tile, terrain_surface, dt)
+            slot = player.hotbar[player.hotbar_index]
+            if slot is not None:
+                item = C.ITEMS[slot["item_id"]]
+                if item.get("is_gun") and player.use_cooldown <= 0:
+                    _shoot_gun(player, projectiles, mouse_world_x, mouse_world_y)
+                else:
+                    player.use_item(world, mouse_tile, terrain_surface, dt)
+            else:
+                player.use_item(world, mouse_tile, terrain_surface, dt)
         else:
             # 松开鼠标重置挖掘进度
             player.mining_target = None
@@ -193,7 +204,38 @@ def run(screen):
         player_pos = player.position
         for slime in slimes:
             slime.update(world, player_pos, dt)
+            # 拾取掉落物
+            if slime.drop_queue:
+                for drop in slime.drop_queue:
+                    player.add_item(drop["item_id"], drop["count"])
+                slime.drop_queue = []
         slimes = [s for s in slimes if s.alive]
+
+        # 更新弹射体
+        for proj in projectiles:
+            proj["x"] += proj["vx"] * dt
+            proj["y"] += proj["vy"] * dt
+            proj["life"] -= dt
+            # 碰撞检测：方块
+            tx = int(proj["x"] // C.BLOCKSIZE)
+            ty = int(proj["y"] // C.BLOCKSIZE)
+            if tile_in_map(world, tx, ty) and world.tile_data[tx][ty] != C.AIR:
+                tile_info = C.TILES.get(world.tile_data[tx][ty])
+                if tile_info and tile_info["solid"]:
+                    proj["alive"] = False
+            # 碰撞检测：史莱姆
+            for slime in slimes:
+                if not slime.alive or slime.dying:
+                    continue
+                proj_rect = pygame.Rect(proj["x"] - 3, proj["y"] - 3, 6, 6)
+                if proj_rect.colliderect(slime.rect):
+                    kb_dir = 1 if slime.position[0] > player.position[0] else -1
+                    slime.damage(proj["damage"], source_velocity=(kb_dir * 80, -40))
+                    proj["alive"] = False
+                    break
+            if proj["life"] <= 0:
+                proj["alive"] = False
+        projectiles = [p for p in projectiles if p["alive"]]
 
         # 更新摄像机（跟随玩家）
         cam_x = player.position[0]
@@ -213,6 +255,15 @@ def run(screen):
         terrain_offset_x = C.WINDOW_WIDTH * 0.5 - cam_x
         terrain_offset_y = C.WINDOW_HEIGHT * 0.5 - cam_y
         screen.blit(terrain_surface, (terrain_offset_x, terrain_offset_y))
+
+        # 灯光发光效果
+        _draw_lamp_glow(screen, world, cam_x, cam_y, sky_color)
+
+        # 弹射体
+        for proj in projectiles:
+            px = proj["x"] - cam_x + C.WINDOW_WIDTH * 0.5
+            py = proj["y"] - cam_y + C.WINDOW_HEIGHT * 0.5
+            pygame.draw.circle(screen, (255, 255, 100), (int(px), int(py)), 3)
 
         # 方块高亮（鼠标悬停）
         if tile_in_map(world, mouse_tile[0], mouse_tile[1]):
@@ -381,3 +432,78 @@ def draw_health_bar(screen, player, font):
     hp_text = font.render(f"{player.hp}/{player.max_hp}", True, (255, 255, 255))
     screen.blit(hp_text, (x + bar_width * 0.5 - hp_text.get_width() * 0.5,
                            y + bar_height * 0.5 - hp_text.get_height() * 0.5))
+
+
+def _shoot_gun(player, projectiles, mouse_world_x, mouse_world_y):
+    """发射枪弹"""
+    # 查找弹药
+    ammo_slot = player.find_ammo("Musket Ball")
+    if ammo_slot is None:
+        return
+    slot_idx, _ = ammo_slot
+
+    # 计算方向
+    dx = mouse_world_x - player.position[0]
+    dy = mouse_world_y - player.position[1]
+    dist = math.sqrt(dx * dx + dy * dy)
+    if dist < 1:
+        return
+    speed = 600
+    vx = dx / dist * speed
+    vy = dy / dist * speed
+
+    gun_damage = C.ITEMS[player.hotbar[player.hotbar_index]["item_id"]]["damage"]
+    ammo_damage = C.ITEMS[player.hotbar[slot_idx]["item_id"]]["damage"]
+
+    projectiles.append({
+        "x": player.position[0] + dx / dist * 20,
+        "y": player.position[1] + dy / dist * 20,
+        "vx": vx, "vy": vy,
+        "damage": gun_damage + ammo_damage,
+        "alive": True,
+        "life": 2.0,
+    })
+
+    player.consume_ammo(slot_idx)
+    player.use_cooldown = 0.5
+    player.swinging = True
+    player.swing_timer = 0.15
+    player.swing_duration = 0.15
+    player.swing_progress = 0.0
+
+    try:
+        from assets import play_sound
+        play_sound("swing", 0.4)  # 临时用 swing 音效
+    except Exception:
+        pass
+
+
+def _draw_lamp_glow(screen, world, cam_x, cam_y, sky_color):
+    """绘制灯光发光效果"""
+    # 只在较暗时绘制（非白天或天空不够亮时）
+    brightness = (sky_color[0] + sky_color[1] + sky_color[2]) / 3
+    if brightness > 180:
+        return  # 白天不需要灯光
+
+    # 计算可见区域
+    half_w = C.WINDOW_WIDTH * 0.5
+    half_h = C.WINDOW_HEIGHT * 0.5
+    min_tx = max(0, int((cam_x - half_w) // C.BLOCKSIZE) - 5)
+    max_tx = min(world.width, int((cam_x + half_w) // C.BLOCKSIZE) + 5)
+    min_ty = max(0, int((cam_y - half_h) // C.BLOCKSIZE) - 5)
+    max_ty = min(world.height, int((cam_y + half_h) // C.BLOCKSIZE) + 5)
+
+    glow_radius = 60
+    glow_surf = pygame.Surface((glow_radius * 2, glow_radius * 2), pygame.SRCALPHA)
+
+    for tx in range(min_tx, max_tx):
+        for ty in range(min_ty, max_ty):
+            if world.tile_data[tx][ty] == 15:  # Lamp
+                px = tx * C.BLOCKSIZE + C.BLOCKSIZE * 0.5 - cam_x + half_w
+                py = ty * C.BLOCKSIZE + C.BLOCKSIZE * 0.5 - cam_y + half_h
+                glow_surf.fill((0, 0, 0, 0))
+                alpha = max(30, int(160 * (1 - brightness / 180)))
+                pygame.draw.circle(glow_surf, (255, 240, 180, alpha),
+                                   (glow_radius, glow_radius), glow_radius)
+                screen.blit(glow_surf, (px - glow_radius, py - glow_radius),
+                            special_flags=pygame.BLEND_RGB_ADD)

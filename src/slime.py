@@ -44,6 +44,9 @@ class Slime:
         self.death_timer = 0
         self.death_particles = []
 
+        # 掉落物队列（game.py 读取后清空）
+        self.drop_queue = []
+
     def update(self, world, player_pos, dt):
         if not self.alive:
             return
@@ -175,6 +178,7 @@ class Slime:
             self.dying = True
             self.death_timer = 0.5
             self._spawn_death_particles(source_velocity)
+            self._generate_drops()
             try:
                 from assets import play_sound
                 play_sound("npc_killed", 0.5)
@@ -203,6 +207,15 @@ class Slime:
                 'size': 4 + random.random() * 6,
                 'color': color,
             })
+
+    def _generate_drops(self):
+        """生成掉落物（凝胶 + 金币）"""
+        # 凝胶：1-2 个
+        gel_count = random.randint(1, 2)
+        self.drop_queue.append({"item_id": 13, "count": gel_count})
+        # 铜币：1-5 个
+        coin_count = random.randint(1, 5)
+        self.drop_queue.append({"item_id": 14, "count": coin_count})
 
     def draw(self, screen, cam_x, cam_y):
         if not self.alive:

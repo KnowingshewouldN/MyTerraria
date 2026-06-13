@@ -40,7 +40,7 @@ TILES = {
     12: {"name": "Sand",       "color": (220, 200, 150),  "solid": True,  "drop_item": 8},
     13: {"name": "Sandstone",  "color": (200, 180, 130),  "solid": True,  "drop_item": None},
     14: {"name": "SnowLeaves", "color": (200, 230, 220),  "solid": False, "drop_item": None},
-}
+    15: {"name": "Lamp",       "color": (255, 255, 200),  "solid": False, "drop_item": 12},}
 
 AIR = 0
 
@@ -64,16 +64,21 @@ BIOMES = {
 
 # 物品定义
 ITEMS = {
-    0: {"name": "Copper Pickaxe", "color": (184, 115, 51), "is_block": False, "place_tile": None, "is_pickaxe": True,  "is_sword": False, "damage": 0,  "max_stack": 1},
-    1: {"name": "Copper Sword",   "color": (200, 80, 80),  "is_block": False, "place_tile": None, "is_pickaxe": False, "is_sword": True,  "damage": 15, "max_stack": 1},
-    2: {"name": "Dirt",           "color": (139, 90, 43),  "is_block": True,  "place_tile": 2,    "is_pickaxe": False, "is_sword": False, "damage": 0,  "max_stack": 99},
-    3: {"name": "Stone",          "color": (128, 128, 128),"is_block": True,  "place_tile": 3,    "is_pickaxe": False, "is_sword": False, "damage": 0,  "max_stack": 99},
-    4: {"name": "Wood",           "color": (181, 137, 72), "is_block": True,  "place_tile": 4,    "is_pickaxe": False, "is_sword": False, "damage": 0,  "max_stack": 99},
-    5: {"name": "Grass",          "color": (76, 153, 0),   "is_block": True,  "place_tile": 1,    "is_pickaxe": False, "is_sword": False, "damage": 0,  "max_stack": 99},
-    6: {"name": "Copper Ore",     "color": (184, 115, 51), "is_block": False, "place_tile": None, "is_pickaxe": False, "is_sword": False, "damage": 0,  "max_stack": 99},
-    7: {"name": "Silver Ore",     "color": (192, 192, 192),"is_block": False, "place_tile": None, "is_pickaxe": False, "is_sword": False, "damage": 0,  "max_stack": 99},
-    8: {"name": "Sand",           "color": (220, 200, 150),"is_block": True,  "place_tile": 12,   "is_pickaxe": False, "is_sword": False, "damage": 0,  "max_stack": 99},
-    9: {"name": "Snow",           "color": (240, 240, 255),"is_block": True,  "place_tile": 10,   "is_pickaxe": False, "is_sword": False, "damage": 0,  "max_stack": 99},
+    0: {"name": "Copper Pickaxe", "color": (184, 115, 51), "is_block": False, "place_tile": None, "is_pickaxe": True,  "is_sword": False, "is_gun": False, "damage": 0,  "max_stack": 1},
+    1: {"name": "Copper Sword",   "color": (200, 80, 80),  "is_block": False, "place_tile": None, "is_pickaxe": False, "is_sword": True,  "is_gun": False, "damage": 15, "max_stack": 1},
+    2: {"name": "Dirt",           "color": (139, 90, 43),  "is_block": True,  "place_tile": 2,    "is_pickaxe": False, "is_sword": False, "is_gun": False, "damage": 0,  "max_stack": 99},
+    3: {"name": "Stone",          "color": (128, 128, 128),"is_block": True,  "place_tile": 3,    "is_pickaxe": False, "is_sword": False, "is_gun": False, "damage": 0,  "max_stack": 99},
+    4: {"name": "Wood",           "color": (181, 137, 72), "is_block": True,  "place_tile": 4,    "is_pickaxe": False, "is_sword": False, "is_gun": False, "damage": 0,  "max_stack": 99},
+    5: {"name": "Grass",          "color": (76, 153, 0),   "is_block": True,  "place_tile": 1,    "is_pickaxe": False, "is_sword": False, "is_gun": False, "damage": 0,  "max_stack": 99},
+    6: {"name": "Copper Ore",     "color": (184, 115, 51), "is_block": False, "place_tile": None, "is_pickaxe": False, "is_sword": False, "is_gun": False, "damage": 0,  "max_stack": 99},
+    7: {"name": "Silver Ore",     "color": (192, 192, 192),"is_block": False, "place_tile": None, "is_pickaxe": False, "is_sword": False, "is_gun": False, "damage": 0,  "max_stack": 99},
+    8:  {"name": "Sand",           "color": (220, 200, 150),"is_block": True,  "place_tile": 12,   "is_pickaxe": False, "is_sword": False, "is_gun": False, "damage": 0,  "max_stack": 99},
+    9:  {"name": "Snow",           "color": (240, 240, 255),"is_block": True,  "place_tile": 10,   "is_pickaxe": False, "is_sword": False, "is_gun": False, "damage": 0,  "max_stack": 99},
+    10: {"name": "Musket",         "color": (100, 80, 60),  "is_block": False, "place_tile": None, "is_pickaxe": False, "is_sword": False, "is_gun": True,  "damage": 12, "max_stack": 1},
+    11: {"name": "Musket Ball",    "color": (180, 180, 180),"is_block": False, "place_tile": None, "is_pickaxe": False, "is_sword": False, "is_gun": False, "damage": 7,  "max_stack": 99},
+    12: {"name": "Lamp",           "color": (255, 255, 200),"is_block": True,  "place_tile": 15,   "is_pickaxe": False, "is_sword": False, "is_gun": False, "damage": 0,  "max_stack": 99},
+    13: {"name": "Gel",            "color": (30, 180, 255), "is_block": False, "place_tile": None, "is_pickaxe": False, "is_sword": False, "is_gun": False, "damage": 0,  "max_stack": 99},
+    14: {"name": "Copper Coin",    "color": (200, 130, 50), "is_block": False, "place_tile": None, "is_pickaxe": False, "is_sword": False, "is_gun": False, "damage": 0,  "max_stack": 99},
 }
 
 # 默认快捷栏
@@ -83,9 +88,9 @@ DEFAULT_HOTBAR = [
     {"item_id": 2, "count": 99},
     {"item_id": 3, "count": 99},
     {"item_id": 4, "count": 99},
-    None,
-    None,
-    None,
+    {"item_id": 10, "count": 1},   # Musket
+    {"item_id": 11, "count": 50},  # Musket Ball
+    {"item_id": 12, "count": 10},  # Lamp
 ]
 
 HOTBAR_SIZE = 8
