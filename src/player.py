@@ -393,7 +393,6 @@ class Player:
                 swing_angle = -less_eased * 175 + 85
             else:
                 swing_angle = less_eased * 175 + 5
-                item_surf = pygame.transform.flip(item_surf, True, False)
 
             rotated = rotate_surface(item_surf, swing_angle)
             arm_len = 20

@@ -7,12 +7,22 @@ from pygame.locals import Rect
 from world import tile_in_map
 
 
+# 史莱姆颜色
+SLIME_COLORS = [
+    (0, 200, 0),     # green
+    (0, 100, 255),   # blue
+    (200, 50, 50),   # red
+    (200, 200, 0),   # yellow
+    (200, 0, 200),   # purple
+]
+
+
 class Slime:
     def __init__(self, position, slime_type=0):
         self.position = list(position)
         self.velocity = [0.0, 0.0]
         self.slime_type = slime_type  # 0=green, 1=blue, 2=red...
-        self.hp = 30 + slime_type * 10
+        self.hp = 50 + slime_type * 15
         self.max_hp = self.hp
         self.alive = True
         self.grounded = False
@@ -29,8 +39,27 @@ class Slime:
         self.direction = 1
         self.hurt_timer = 0.0
 
+        # 死亡动画
+        self.dying = False
+        self.death_timer = 0
+        self.death_particles = []
+
     def update(self, world, player_pos, dt):
         if not self.alive:
+            return
+
+        # 更新死亡粒子
+        if self.dying:
+            self.death_timer -= dt
+            for p in self.death_particles:
+                p['vy'] += C.GRAVITY * dt * 0.5
+                p['x'] += p['vx'] * dt
+                p['y'] += p['vy'] * dt
+                p['life'] -= dt
+                p['size'] = max(0, p['size'] - dt * 8)
+            self.death_particles = [p for p in self.death_particles if p['life'] > 0]
+            if self.death_timer <= 0 and not self.death_particles:
+                self.alive = False
             return
 
         if self.hurt_timer > 0:
@@ -130,8 +159,8 @@ class Slime:
         if math.sqrt(dx * dx + dy * dy) > C.BLOCKSIZE * 60:
             self.alive = False
 
-    def damage(self, value):
-        if not self.alive:
+    def damage(self, value, source_velocity=None):
+        if not self.alive or self.dying:
             return
         self.hp -= value
         if self.hurt_timer <= 0:
@@ -143,11 +172,53 @@ class Slime:
             self.hurt_timer = 0.3
         if self.hp <= 0:
             self.hp = 0
-            self.alive = False
+            self.dying = True
+            self.death_timer = 0.5
+            self._spawn_death_particles(source_velocity)
+            try:
+                from assets import play_sound
+                play_sound("npc_killed", 0.5)
+            except Exception:
+                pass
+
+    def _spawn_death_particles(self, source_velocity=None):
+        """生成死亡爆炸粒子（参考原项目 enemy.kill）"""
+        color = SLIME_COLORS[self.slime_type % len(SLIME_COLORS)]
+        # 击退方向作为粒子主方向
+        if source_velocity is not None:
+            vel_angle = math.atan2(source_velocity[1], source_velocity[0])
+            vel_mag = math.sqrt(source_velocity[0] ** 2 + source_velocity[1] ** 2)
+        else:
+            vel_angle = -math.pi * 0.5
+            vel_mag = 30
+        for _ in range(15):
+            p_angle = vel_angle + (random.random() - 0.5) * math.pi * 1.5
+            p_speed = random.random() * vel_mag * 0.5 + 20
+            self.death_particles.append({
+                'x': self.position[0] + random.random() * self.rect.width - self.rect.width * 0.5,
+                'y': self.position[1] + random.random() * self.rect.height - self.rect.height * 0.5,
+                'vx': math.cos(p_angle) * p_speed,
+                'vy': math.sin(p_angle) * p_speed,
+                'life': 0.3 + random.random() * 0.4,
+                'size': 4 + random.random() * 6,
+                'color': color,
+            })
 
     def draw(self, screen, cam_x, cam_y):
         if not self.alive:
             return
+
+        # 死亡粒子（在身体消失后仍要绘制）
+        for p in self.death_particles:
+            sx = p['x'] - cam_x + C.WINDOW_WIDTH * 0.5
+            sy = p['y'] - cam_y + C.WINDOW_HEIGHT * 0.5
+            size = int(p['size'])
+            if size > 0:
+                pygame.draw.rect(screen, p['color'], (int(sx), int(sy), size, size))
+
+        if self.dying:
+            return
+
         try:
             from assets import slime_surfaces
             if not slime_surfaces:

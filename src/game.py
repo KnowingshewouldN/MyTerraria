@@ -304,11 +304,12 @@ def _sword_hit_slimes(player, slimes):
         if not slime.alive:
             continue
         if hit_rect.colliderect(slime.rect):
-            slime.damage(item["damage"])
             # 击退
             kb_dir = 1 if slime.position[0] > player.position[0] else -1
+            kb_vel = (kb_dir * 80, -60)
             slime.velocity[0] = kb_dir * 15
             slime.velocity[1] = -20
+            slime.damage(item["damage"], source_velocity=kb_vel)
 
 
 def draw_hotbar(screen, player, font):

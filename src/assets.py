@@ -92,7 +92,7 @@ def _load_item_surfaces():
             img.set_colorkey((255, 0, 255))
             item_surfaces[item_id] = img
             # 创建放大版用于手持渲染
-            world_size = 32
+            world_size = 42
             world_img = pygame.transform.scale(img, (world_size, world_size))
             world_img.set_colorkey((255, 0, 255))
             item_world_surfaces[item_id] = world_img
