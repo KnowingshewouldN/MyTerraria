@@ -51,7 +51,7 @@ class Player:
         # 挖掘状态
         self.mining_target = None  # (tx, ty) 正在挖的方块
         self.mining_progress = 0.0  # 0->1 挖掘进度
-        self.mining_time = 0.4  # 挖一个方块需要的秒数
+        self.mining_time = 0.1  # 挖一个方块需要的秒数
 
         # 走路音效
         self.run_sound_timer = 0.0

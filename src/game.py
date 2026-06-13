@@ -108,6 +108,7 @@ def run(screen):
     cam_y = player.position[1]
 
     old_ticks = pygame.time.get_ticks()
+    game_time = 0.0  # 昼夜计时器
     running = True
 
     while running:
@@ -117,6 +118,7 @@ def run(screen):
         if dt > 0.033:
             dt = 0.033
         old_ticks = current_ticks
+        game_time += dt
 
         # 音乐延迟播放
         if not music_started and time.time() >= music_start_time:
@@ -204,7 +206,8 @@ def run(screen):
         cam_y = max(half_h, min(cam_y, world.height * C.BLOCKSIZE - half_h))
 
         # ===== 渲染 =====
-        screen.fill(C.SKY_COLOR)
+        sky_color = C.get_sky_color(game_time)
+        screen.fill(sky_color)
 
         # 地形
         terrain_offset_x = C.WINDOW_WIDTH * 0.5 - cam_x
@@ -243,9 +246,12 @@ def run(screen):
         fps_text = small_font.render(f"FPS: {int(clock.get_fps())}", True, (255, 255, 255))
         screen.blit(fps_text, (5, 5))
 
-        # 坐标信息
+        # 坐标信息 + 昼夜指示
+        is_night = (game_time % C.DAY_NIGHT_CYCLE) > C.DAY_DURATION
+        time_phase = (game_time % C.DAY_NIGHT_CYCLE) / C.DAY_NIGHT_CYCLE
+        time_label = "Night" if is_night else "Day"
         coord_text = small_font.render(
-            f"Pos: ({player.block_x}, {player.block_y})  Slimes: {len(slimes)}", True, (255, 255, 255))
+            f"Pos: ({player.block_x}, {player.block_y})  Slimes: {len(slimes)}  {time_label}", True, (255, 255, 255))
         screen.blit(coord_text, (5, 22))
 
         pygame.display.flip()

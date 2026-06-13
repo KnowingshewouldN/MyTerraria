@@ -10,7 +10,7 @@ FPS = 60
 BLOCKSIZE = 16
 
 # 物理
-GRAVITY = 9.8 * BLOCKSIZE * 0.666  # 与原项目一致
+GRAVITY = 9.8 * BLOCKSIZE * 0.666
 PLAYER_SPEED = 12
 JUMP_VELOCITY = -50
 
@@ -24,23 +24,45 @@ WORLD_WIDTH = 400
 WORLD_HEIGHT = 200
 
 # 方块定义: id -> {name, color, solid, drop_item}
-# drop_item 为 None 表示不掉落, 为 int 表示掉落的物品 id
 TILES = {
-    0: {"name": "Air",       "color": None,             "solid": False, "drop_item": None},
-    1: {"name": "Grass",     "color": (76, 153, 0),     "solid": True,  "drop_item": 5},
-    2: {"name": "Dirt",      "color": (139, 90, 43),    "solid": True,  "drop_item": 2},
-    3: {"name": "Stone",     "color": (128, 128, 128),  "solid": True,  "drop_item": 3},
-    4: {"name": "Wood",      "color": (181, 137, 72),   "solid": True,  "drop_item": 4},
-    5: {"name": "CopperOre", "color": (184, 115, 51),   "solid": True,  "drop_item": 6},
-    6: {"name": "Leaves",    "color": (34, 120, 15),    "solid": False, "drop_item": None},
-    7: {"name": "Platform",  "color": (160, 130, 80),   "solid": False, "drop_item": None},
-    8: {"name": "Trunk",     "color": (120, 80, 40),    "solid": False, "drop_item": 4},  # 树干，可穿过
-    9: {"name": "SilverOre", "color": (192, 192, 192),  "solid": True,  "drop_item": 7},  # 银矿
+    0:  {"name": "Air",        "color": None,             "solid": False, "drop_item": None},
+    1:  {"name": "Grass",      "color": (76, 153, 0),     "solid": True,  "drop_item": 5},
+    2:  {"name": "Dirt",       "color": (139, 90, 43),    "solid": True,  "drop_item": 2},
+    3:  {"name": "Stone",      "color": (128, 128, 128),  "solid": True,  "drop_item": 3},
+    4:  {"name": "Wood",       "color": (181, 137, 72),   "solid": True,  "drop_item": 4},
+    5:  {"name": "CopperOre",  "color": (184, 115, 51),   "solid": True,  "drop_item": 6},
+    6:  {"name": "Leaves",     "color": (34, 120, 15),    "solid": False, "drop_item": None},
+    7:  {"name": "Platform",   "color": (160, 130, 80),   "solid": False, "drop_item": None},
+    8:  {"name": "Trunk",      "color": (120, 80, 40),    "solid": False, "drop_item": 4},
+    9:  {"name": "SilverOre",  "color": (192, 192, 192),  "solid": True,  "drop_item": 7},
+    10: {"name": "Snow",       "color": (240, 240, 255),  "solid": True,  "drop_item": 9},
+    11: {"name": "Ice",        "color": (150, 200, 255),  "solid": True,  "drop_item": None},
+    12: {"name": "Sand",       "color": (220, 200, 150),  "solid": True,  "drop_item": 8},
+    13: {"name": "Sandstone",  "color": (200, 180, 130),  "solid": True,  "drop_item": None},
+    14: {"name": "SnowLeaves", "color": (200, 230, 220),  "solid": False, "drop_item": None},
 }
 
 AIR = 0
 
-# 物品定义: id -> {name, color, is_block, place_tile, is_pickaxe, is_sword, damage, max_stack}
+# 背景墙定义: id -> {name, sprite_file}
+WALLS = {
+    0: {"name": "None"},
+    1: {"name": "DirtWall",      "sprite": "wall_dirt.png"},
+    2: {"name": "StoneWall",     "sprite": "wall_stone.png"},
+    3: {"name": "SnowWall",      "sprite": "wall_snow.png"},
+    4: {"name": "IceWall",       "sprite": "wall_ice.png"},
+    5: {"name": "SandWall",      "sprite": "wall_sand.png"},
+    6: {"name": "SandstoneWall", "sprite": "wall_sandstone.png"},
+}
+
+# 群系定义: id -> {name, surface_tile, underground_tile, deep_tile, underground_wall, deep_wall, tree_leaves}
+BIOMES = {
+    0: {"name": "Forest",  "surface": 1,  "underground": 2,  "deep": 3,  "ug_wall": 1, "deep_wall": 2, "leaves": 6},
+    1: {"name": "Snow",    "surface": 10, "underground": 10, "deep": 11, "ug_wall": 3, "deep_wall": 4, "leaves": 14},
+    2: {"name": "Desert",  "surface": 12, "underground": 12, "deep": 13, "ug_wall": 5, "deep_wall": 6, "leaves": None},
+}
+
+# 物品定义
 ITEMS = {
     0: {"name": "Copper Pickaxe", "color": (184, 115, 51), "is_block": False, "place_tile": None, "is_pickaxe": True,  "is_sword": False, "damage": 0,  "max_stack": 1},
     1: {"name": "Copper Sword",   "color": (200, 80, 80),  "is_block": False, "place_tile": None, "is_pickaxe": False, "is_sword": True,  "damage": 15, "max_stack": 1},
@@ -50,15 +72,17 @@ ITEMS = {
     5: {"name": "Grass",          "color": (76, 153, 0),   "is_block": True,  "place_tile": 1,    "is_pickaxe": False, "is_sword": False, "damage": 0,  "max_stack": 99},
     6: {"name": "Copper Ore",     "color": (184, 115, 51), "is_block": False, "place_tile": None, "is_pickaxe": False, "is_sword": False, "damage": 0,  "max_stack": 99},
     7: {"name": "Silver Ore",     "color": (192, 192, 192),"is_block": False, "place_tile": None, "is_pickaxe": False, "is_sword": False, "damage": 0,  "max_stack": 99},
+    8: {"name": "Sand",           "color": (220, 200, 150),"is_block": True,  "place_tile": 12,   "is_pickaxe": False, "is_sword": False, "damage": 0,  "max_stack": 99},
+    9: {"name": "Snow",           "color": (240, 240, 255),"is_block": True,  "place_tile": 10,   "is_pickaxe": False, "is_sword": False, "damage": 0,  "max_stack": 99},
 }
 
-# 默认快捷栏: list of {"item_id": int, "count": int} or None
+# 默认快捷栏
 DEFAULT_HOTBAR = [
-    {"item_id": 0, "count": 1},   # 铜镐
-    {"item_id": 1, "count": 1},   # 铜剑
-    {"item_id": 2, "count": 99},  # 泥土
-    {"item_id": 3, "count": 99},  # 石头
-    {"item_id": 4, "count": 99},  # 木头
+    {"item_id": 0, "count": 1},
+    {"item_id": 1, "count": 1},
+    {"item_id": 2, "count": 99},
+    {"item_id": 3, "count": 99},
+    {"item_id": 4, "count": 99},
     None,
     None,
     None,
@@ -66,20 +90,29 @@ DEFAULT_HOTBAR = [
 
 HOTBAR_SIZE = 8
 
-# 挖掘冷却（秒）
+# 挖掘/攻击/放置冷却
 MINE_COOLDOWN = 0.25
-# 攻击冷却（秒）
 ATTACK_COOLDOWN = 0.35
-# 放置冷却（秒）
 PLACE_COOLDOWN = 0.2
 
-# 颜色常量
+# 昼夜系统
+DAY_DURATION = 30.0
+NIGHT_DURATION = 15.0
+DAY_NIGHT_CYCLE = DAY_DURATION + NIGHT_DURATION
+
+# 颜色
 SKY_COLOR = (135, 206, 235)
 SLOT_BG_COLOR = (40, 40, 40)
 SLOT_BORDER_COLOR = (80, 80, 80)
 SLOT_SELECTED_COLOR = (255, 255, 255)
 HEALTH_BAR_BG = (60, 60, 60)
 HEALTH_BAR_FG = (220, 30, 30)
+
+# 昼夜天空颜色
+SKY_DAWN = (255, 180, 120)
+SKY_DAY = (135, 206, 235)
+SKY_SUNSET = (240, 130, 60)
+SKY_NIGHT = (10, 10, 40)
 
 
 def get_tile_surface(tile_id, size=BLOCKSIZE):
@@ -93,7 +126,6 @@ def get_tile_surface(tile_id, size=BLOCKSIZE):
             return surf
     except Exception:
         pass
-    # 备用：纯色矩形
     tile = TILES.get(tile_id)
     if tile is None or tile["color"] is None:
         return None
@@ -114,10 +146,45 @@ def get_item_icon(item_id, size=32):
             return scaled
     except Exception:
         pass
-    # 备用：纯色矩形
     item = ITEMS.get(item_id)
     if item is None:
         return None
     surf = pygame.Surface((min(size - 8, 32), min(size - 8, 32)))
     surf.fill(item["color"])
     return surf
+
+
+def get_sky_color(game_time):
+    """根据游戏时间计算天空颜色"""
+    phase = (game_time % DAY_NIGHT_CYCLE) / DAY_NIGHT_CYCLE
+
+    # 阶段划分（phase 0~1）:
+    #   0.00 ~ 0.05  黎明过渡
+    #   0.05 ~ 0.60  白天
+    #   0.60 ~ 0.67  黄昏过渡
+    #   0.67 ~ 1.00  黑夜（末尾黎明过渡回白天）
+    if phase < 0.05:
+        t = phase / 0.05
+        return _lerp_color(SKY_NIGHT, SKY_DAWN, t)
+    elif phase < 0.12:
+        t = (phase - 0.05) / 0.07
+        return _lerp_color(SKY_DAWN, SKY_DAY, t)
+    elif phase < 0.58:
+        return SKY_DAY
+    elif phase < 0.65:
+        t = (phase - 0.58) / 0.07
+        return _lerp_color(SKY_DAY, SKY_SUNSET, t)
+    elif phase < 0.70:
+        t = (phase - 0.65) / 0.05
+        return _lerp_color(SKY_SUNSET, SKY_NIGHT, t)
+    else:
+        return SKY_NIGHT
+
+
+def _lerp_color(c1, c2, t):
+    t = max(0.0, min(1.0, t))
+    return (
+        int(c1[0] + (c2[0] - c1[0]) * t),
+        int(c1[1] + (c2[1] - c1[1]) * t),
+        int(c1[2] + (c2[2] - c1[2]) * t),
+    )

@@ -15,6 +15,9 @@ SOUNDS_PATH = os.path.join(RES_PATH, "sounds")
 # 方块精灵缓存: tile_id -> pygame.Surface (16x16)
 tile_surfaces = {}
 
+# 背景墙精灵缓存: wall_id -> pygame.Surface (16x16)
+wall_surfaces = {}
+
 # 物品精灵缓存: item_id -> pygame.Surface (16x16, colorkey applied)
 item_surfaces = {}
 # 物品世界渲染精灵（放大版，用于手持）
@@ -48,6 +51,7 @@ sound_cache = {}
 def init():
     global font_small, font_default, font_large
     _load_tile_surfaces()
+    _load_wall_surfaces()
     _load_item_surfaces()
     _load_gui_surfaces()
     _load_torso_surfaces()
@@ -67,6 +71,8 @@ def _load_tile_surfaces():
         0: "air.png", 1: "grass.png", 2: "dirt.png", 3: "stone.png",
         4: "wood.png", 5: "copper.png", 6: "leaves.png", 7: "platform_wood.png",
         8: "trunk.png", 9: "silver.png",
+        10: "snow.png", 11: "ice.png", 12: "sand.png", 13: "sandstone.png",
+        14: "snow_leaves.png",
     }
     for tile_id, filename in tile_files.items():
         filepath = os.path.join(TILES_PATH, filename)
@@ -77,13 +83,31 @@ def _load_tile_surfaces():
             tile_surfaces[tile_id] = img
 
 
+def _load_wall_surfaces():
+    """加载背景墙精灵"""
+    global wall_surfaces
+    import constants as C
+    for wall_id, wall_info in C.WALLS.items():
+        if wall_id == 0:
+            continue
+        sprite_file = wall_info.get("sprite")
+        if not sprite_file:
+            continue
+        filepath = os.path.join(ITEMS_PATH, sprite_file)
+        if os.path.exists(filepath):
+            img = pygame.image.load(filepath).convert_alpha()
+            if img.get_size() != (16, 16):
+                img = pygame.transform.scale(img, (16, 16))
+            wall_surfaces[wall_id] = img
+
+
 def _load_item_surfaces():
     """加载物品精灵，扣掉品红背景"""
     global item_surfaces, item_world_surfaces
     item_files = {
         0: "copper_pickaxe.png", 1: "sword_copper.png", 2: "dirt.png",
         3: "stone.png", 4: "wood.png", 5: "grass.png", 6: "copper.png",
-        7: "silver.png",
+        7: "silver.png", 8: "sand.png", 9: "snow.png",
     }
     for item_id, filename in item_files.items():
         filepath = os.path.join(ITEMS_PATH, filename)
@@ -371,3 +395,8 @@ def get_gui_selected_slot_surface():
     if len(gui_surfaces) > 1:
         return gui_surfaces[1]
     return None
+
+
+def get_wall_surface(wall_id):
+    """获取背景墙精灵"""
+    return wall_surfaces.get(wall_id)
