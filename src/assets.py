@@ -85,9 +85,18 @@ def _load_tile_surfaces():
 
 
 def _load_wall_surfaces():
-    """加载背景墙精灵"""
+    """加载背景墙精灵 — 填充底色消除方块间的白色缝隙"""
     global wall_surfaces
     import constants as C
+    # 墙体底色（与方块材质对应的深色）
+    wall_base_colors = {
+        1: (70, 45, 22),    # Dirt wall
+        2: (60, 60, 60),    # Stone wall
+        3: (190, 200, 215), # Snow wall
+        4: (70, 95, 125),   # Ice wall
+        5: (105, 95, 70),   # Sand wall
+        6: (95, 85, 60),    # Sandstone wall
+    }
     for wall_id, wall_info in C.WALLS.items():
         if wall_id == 0:
             continue
@@ -100,7 +109,11 @@ def _load_wall_surfaces():
             img.set_colorkey((255, 0, 255))
             if img.get_size() != (16, 16):
                 img = pygame.transform.scale(img, (16, 16))
-            wall_surfaces[wall_id] = img
+            # 创建无缝 tile：底色填充 + 纹理叠加
+            tile = pygame.Surface((16, 16))
+            tile.fill(wall_base_colors.get(wall_id, (50, 50, 50)))
+            tile.blit(img, (0, 0))
+            wall_surfaces[wall_id] = tile
 
 
 def _load_item_surfaces():

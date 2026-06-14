@@ -50,17 +50,14 @@ def run_menu(screen):
         # 绘制
         screen.fill((20, 20, 60))
 
-        # 标题
         title_surf = font_title.render("Terraria", True, (255, 255, 255))
         screen.blit(title_surf, (C.WINDOW_WIDTH * 0.5 - title_surf.get_width() * 0.5,
                                   C.WINDOW_HEIGHT * 0.25 - title_surf.get_height() * 0.5))
 
-        # 副标题
         sub_surf = font_default.render("MyTerraria", True, (180, 180, 180))
         screen.blit(sub_surf, (C.WINDOW_WIDTH * 0.5 - sub_surf.get_width() * 0.5,
                                 C.WINDOW_HEIGHT * 0.35))
 
-        # Play 按钮
         btn_color = (80, 180, 80) if hover else (50, 130, 50)
         pygame.draw.rect(screen, btn_color, button_rect, border_radius=8)
         pygame.draw.rect(screen, (200, 255, 200), button_rect, 2, border_radius=8)
@@ -103,7 +100,7 @@ def run(screen):
 
     # 史莱姆管理
     slimes = []
-    slime_spawn_timer = 3.0  # 首次 3 秒后生成
+    slime_spawn_timer = 3.0
     max_slimes = 5
 
     # 摄像机
@@ -111,8 +108,14 @@ def run(screen):
     cam_y = player.position[1]
 
     old_ticks = pygame.time.get_ticks()
-    game_time = 0.0  # 昼夜计时器
+    game_time = 0.0
+    inventory_open = False
     running = True
+
+    # Quit 按钮位置（固定）
+    quit_rect = pygame.Rect(0, 0, 120, 36)
+    quit_rect.centerx = int(C.WINDOW_WIDTH * 0.5)
+    quit_rect.y = int(C.WINDOW_HEIGHT * 0.5 + 380 * 0.5 - 36 - 15)
 
     while running:
         # Delta time
@@ -121,7 +124,9 @@ def run(screen):
         if dt > 0.033:
             dt = 0.033
         old_ticks = current_ticks
-        game_time += dt
+
+        if not inventory_open:
+            game_time += dt
 
         # 音乐延迟播放
         if not music_started and time.time() >= music_start_time:
@@ -134,24 +139,25 @@ def run(screen):
         mouse_world_y = cam_y + mouse_pos[1] - C.WINDOW_HEIGHT * 0.5
         mouse_tile = (int(mouse_world_x // C.BLOCKSIZE), int(mouse_world_y // C.BLOCKSIZE))
 
-        # 事件处理
+        # ===== 事件处理 =====
         for event in pygame.event.get():
             if event.type == QUIT:
                 running = False
 
             elif event.type == KEYDOWN:
-                if event.key == K_a:
-                    player.moving_left = True
-                elif event.key == K_d:
-                    player.moving_right = True
-                elif event.key == K_SPACE:
-                    player.jump()
-                elif event.key == K_s:
-                    player.moving_down = True
-                elif event.key == K_ESCAPE:
-                    running = False
-                elif event.key in (K_1, K_2, K_3, K_4, K_5, K_6, K_7, K_8):
-                    player.hotbar_index = event.key - K_1
+                if event.key == K_ESCAPE:
+                    inventory_open = not inventory_open
+                elif not inventory_open:
+                    if event.key == K_a:
+                        player.moving_left = True
+                    elif event.key == K_d:
+                        player.moving_right = True
+                    elif event.key == K_SPACE:
+                        player.jump()
+                    elif event.key == K_s:
+                        player.moving_down = True
+                    elif event.key in (K_1, K_2, K_3, K_4, K_5, K_6, K_7, K_8):
+                        player.hotbar_index = event.key - K_1
 
             elif event.type == KEYUP:
                 if event.key == K_a:
@@ -162,86 +168,86 @@ def run(screen):
                     player.moving_down = False
 
             elif event.type == MOUSEBUTTONDOWN:
-                if event.button == 4:  # 滚轮上
-                    player.hotbar_index = (player.hotbar_index - 1) % C.HOTBAR_SIZE
-                elif event.button == 5:  # 滚轮下
-                    player.hotbar_index = (player.hotbar_index + 1) % C.HOTBAR_SIZE
+                if inventory_open:
+                    if event.button == 1 and quit_rect.collidepoint(mouse_pos):
+                        running = False
+                else:
+                    if event.button == 4:
+                        player.hotbar_index = (player.hotbar_index - 1) % C.HOTBAR_SIZE
+                    elif event.button == 5:
+                        player.hotbar_index = (player.hotbar_index + 1) % C.HOTBAR_SIZE
 
-        # 鼠标持续按下：持续使用物品（传递 dt 用于挖掘进度）
-        if pygame.mouse.get_pressed()[0]:
-            slot = player.hotbar[player.hotbar_index]
-            if slot is not None:
-                item = C.ITEMS[slot["item_id"]]
-                if item.get("is_gun") and player.use_cooldown <= 0:
-                    _shoot_gun(player, projectiles, mouse_world_x, mouse_world_y)
+        # ===== 游戏逻辑（暂停时跳过）=====
+        if not inventory_open:
+            # 鼠标持续按下
+            if pygame.mouse.get_pressed()[0]:
+                slot = player.hotbar[player.hotbar_index]
+                if slot is not None:
+                    item = C.ITEMS[slot["item_id"]]
+                    if item.get("is_gun") and player.use_cooldown <= 0:
+                        _shoot_gun(player, projectiles, mouse_world_x, mouse_world_y)
+                    else:
+                        player.use_item(world, mouse_tile, terrain_surface, dt)
                 else:
                     player.use_item(world, mouse_tile, terrain_surface, dt)
             else:
-                player.use_item(world, mouse_tile, terrain_surface, dt)
-        else:
-            # 松开鼠标重置挖掘进度
-            player.mining_target = None
-            player.mining_progress = 0
+                player.mining_target = None
+                player.mining_progress = 0
 
-        # 挥剑攻击史莱姆
-        if player.swinging and player.use_cooldown > 0:
-            slot = player.hotbar[player.hotbar_index]
-            if slot is not None:
-                item = C.ITEMS[slot["item_id"]]
-                if item["is_sword"]:
-                    _sword_hit_slimes(player, slimes)
+            # 挥剑攻击史莱姆
+            if player.swinging and player.use_cooldown > 0:
+                slot = player.hotbar[player.hotbar_index]
+                if slot is not None:
+                    item = C.ITEMS[slot["item_id"]]
+                    if item["is_sword"]:
+                        _sword_hit_slimes(player, slimes)
 
-        # 更新玩家
-        player.update(world, dt)
+            # 更新玩家
+            player.update(world, dt)
 
-        # 史莱姆生成
-        slime_spawn_timer -= dt
-        if slime_spawn_timer <= 0 and len(slimes) < max_slimes:
-            slime_spawn_timer = 5.0 + random.random() * 5.0
-            _spawn_slime(slimes, player, world)
+            # 史莱姆生成
+            slime_spawn_timer -= dt
+            if slime_spawn_timer <= 0 and len(slimes) < max_slimes:
+                slime_spawn_timer = 5.0 + random.random() * 5.0
+                _spawn_slime(slimes, player, world)
 
-        # 更新史莱姆
-        player_pos = player.position
-        for slime in slimes:
-            slime.update(world, player_pos, dt)
-            # 拾取掉落物
-            if slime.drop_queue:
-                for drop in slime.drop_queue:
-                    player.add_item(drop["item_id"], drop["count"])
-                slime.drop_queue = []
-        slimes = [s for s in slimes if s.alive]
-
-        # 更新弹射体
-        for proj in projectiles:
-            proj["x"] += proj["vx"] * dt
-            proj["y"] += proj["vy"] * dt
-            proj["life"] -= dt
-            # 碰撞检测：方块
-            tx = int(proj["x"] // C.BLOCKSIZE)
-            ty = int(proj["y"] // C.BLOCKSIZE)
-            if tile_in_map(world, tx, ty) and world.tile_data[tx][ty] != C.AIR:
-                tile_info = C.TILES.get(world.tile_data[tx][ty])
-                if tile_info and tile_info["solid"]:
-                    proj["alive"] = False
-            # 碰撞检测：史莱姆
+            # 更新史莱姆
+            player_pos = player.position
             for slime in slimes:
-                if not slime.alive or slime.dying:
-                    continue
-                proj_rect = pygame.Rect(proj["x"] - 3, proj["y"] - 3, 6, 6)
-                if proj_rect.colliderect(slime.rect):
-                    kb_dir = 1 if slime.position[0] > player.position[0] else -1
-                    slime.damage(proj["damage"], source_velocity=(kb_dir * 80, -40))
-                    proj["alive"] = False
-                    break
-            if proj["life"] <= 0:
-                proj["alive"] = False
-        projectiles = [p for p in projectiles if p["alive"]]
+                slime.update(world, player_pos, dt)
+                if slime.drop_queue:
+                    for drop in slime.drop_queue:
+                        player.add_item(drop["item_id"], drop["count"])
+                    slime.drop_queue = []
+            slimes = [s for s in slimes if s.alive]
 
-        # 更新摄像机（跟随玩家）
+            # 更新弹射体
+            for proj in projectiles:
+                proj["x"] += proj["vx"] * dt
+                proj["y"] += proj["vy"] * dt
+                proj["life"] -= dt
+                tx = int(proj["x"] // C.BLOCKSIZE)
+                ty = int(proj["y"] // C.BLOCKSIZE)
+                if tile_in_map(world, tx, ty) and world.tile_data[tx][ty] != C.AIR:
+                    tile_info = C.TILES.get(world.tile_data[tx][ty])
+                    if tile_info and tile_info["solid"]:
+                        proj["alive"] = False
+                for slime in slimes:
+                    if not slime.alive or slime.dying:
+                        continue
+                    proj_rect = pygame.Rect(proj["x"] - 3, proj["y"] - 3, 6, 6)
+                    if proj_rect.colliderect(slime.rect):
+                        kb_dir = 1 if slime.position[0] > player.position[0] else -1
+                        slime.damage(proj["damage"], source_velocity=(kb_dir * 80, -40))
+                        proj["alive"] = False
+                        break
+                if proj["life"] <= 0:
+                    proj["alive"] = False
+            projectiles = [p for p in projectiles if p["alive"]]
+
+        # 更新摄像机
         cam_x = player.position[0]
         cam_y = player.position[1]
-
-        # 摄像机边界
         half_w = C.WINDOW_WIDTH * 0.5
         half_h = C.WINDOW_HEIGHT * 0.5
         cam_x = max(half_w, min(cam_x, world.width * C.BLOCKSIZE - half_w))
@@ -251,25 +257,14 @@ def run(screen):
         sky_color = C.get_sky_color(game_time)
         screen.fill(sky_color)
 
-        # 地形
         terrain_offset_x = C.WINDOW_WIDTH * 0.5 - cam_x
         terrain_offset_y = C.WINDOW_HEIGHT * 0.5 - cam_y
         screen.blit(terrain_surface, (terrain_offset_x, terrain_offset_y))
 
-        # 灯光发光效果
-        _draw_lamp_glow(screen, world, cam_x, cam_y, sky_color)
-
-        # 弹射体
-        for proj in projectiles:
-            px = proj["x"] - cam_x + C.WINDOW_WIDTH * 0.5
-            py = proj["y"] - cam_y + C.WINDOW_HEIGHT * 0.5
-            pygame.draw.circle(screen, (255, 255, 100), (int(px), int(py)), 3)
-
-        # 方块高亮（鼠标悬停）
-        if tile_in_map(world, mouse_tile[0], mouse_tile[1]):
+        # 方块高亮
+        if not inventory_open and tile_in_map(world, mouse_tile[0], mouse_tile[1]):
             hl_x = mouse_tile[0] * C.BLOCKSIZE + terrain_offset_x
             hl_y = mouse_tile[1] * C.BLOCKSIZE + terrain_offset_y
-            # 距离检查 - 只有在范围内的才高亮
             dx = mouse_tile[0] - player.block_x
             dy = mouse_tile[1] - player.block_y
             if math.sqrt(dx * dx + dy * dy) <= C.PLAYER_REACH:
@@ -279,6 +274,12 @@ def run(screen):
                 pygame.draw.rect(screen, (100, 100, 100),
                                  (hl_x, hl_y, C.BLOCKSIZE, C.BLOCKSIZE), 1)
 
+        # 弹射体
+        for proj in projectiles:
+            px = proj["x"] - cam_x + C.WINDOW_WIDTH * 0.5
+            py = proj["y"] - cam_y + C.WINDOW_HEIGHT * 0.5
+            pygame.draw.circle(screen, (255, 255, 100), (int(px), int(py)), 3)
+
         # 史莱姆
         for slime in slimes:
             slime.draw(screen, cam_x, cam_y)
@@ -287,23 +288,26 @@ def run(screen):
         player.draw(screen, cam_x, cam_y)
 
         # 挖掘进度条
-        player.draw_mining_progress(screen, cam_x, cam_y)
+        if not inventory_open:
+            player.draw_mining_progress(screen, cam_x, cam_y)
 
         # ===== UI =====
         draw_hotbar(screen, player, font)
         draw_health_bar(screen, player, font)
 
-        # FPS
+        # FPS + 坐标
         fps_text = small_font.render(f"FPS: {int(clock.get_fps())}", True, (255, 255, 255))
         screen.blit(fps_text, (5, 5))
 
-        # 坐标信息 + 昼夜指示
         is_night = (game_time % C.DAY_NIGHT_CYCLE) > C.DAY_DURATION
-        time_phase = (game_time % C.DAY_NIGHT_CYCLE) / C.DAY_NIGHT_CYCLE
         time_label = "Night" if is_night else "Day"
         coord_text = small_font.render(
             f"Pos: ({player.block_x}, {player.block_y})  Slimes: {len(slimes)}  {time_label}", True, (255, 255, 255))
         screen.blit(coord_text, (5, 22))
+
+        # ===== 物品栏覆盖层 =====
+        if inventory_open:
+            draw_inventory(screen, player, font, quit_rect)
 
         pygame.display.flip()
         clock.tick(C.FPS)
@@ -313,30 +317,23 @@ def run(screen):
 
 
 def _spawn_slime(slimes, player, world):
-    """在玩家附近生成史莱姆"""
-    # 在玩家左右 20-40 格范围、同一高度附近生成
     side = random.choice([-1, 1])
     dist = random.randint(20, 40)
     spawn_x = player.position[0] + side * dist * C.BLOCKSIZE
-
-    # 从上往下找地面
     bx = int(spawn_x // C.BLOCKSIZE)
     by = 0
     for y in range(world.height):
         if 0 <= bx < world.width and world.tile_data[bx][y] != C.AIR:
             by = y
             break
-
     spawn_y = by * C.BLOCKSIZE - C.BLOCKSIZE
     if spawn_y <= 0:
         return
-
-    slime_type = random.randint(0, min(4, 2))  # 0-2 类型（绿/蓝/红）
+    slime_type = random.randint(0, min(4, 2))
     slimes.append(Slime((spawn_x, spawn_y), slime_type))
 
 
 def _sword_hit_slimes(player, slimes):
-    """检测挥剑是否击中史莱姆"""
     if not player.swinging:
         return
     slot = player.hotbar[player.hotbar_index]
@@ -346,7 +343,6 @@ def _sword_hit_slimes(player, slimes):
     if not item["is_sword"]:
         return
 
-    # 挥剑判定：玩家前方一定范围内的矩形
     reach_px = C.PLAYER_REACH * C.BLOCKSIZE * 0.5
     if player.direction == 1:
         hit_x = player.position[0] + C.PLAYER_WIDTH * 0.5
@@ -361,7 +357,6 @@ def _sword_hit_slimes(player, slimes):
         if not slime.alive:
             continue
         if hit_rect.colliderect(slime.rect):
-            # 击退
             kb_dir = 1 if slime.position[0] > player.position[0] else -1
             kb_vel = (kb_dir * 80, -60)
             slime.velocity[0] = kb_dir * 15
@@ -369,80 +364,12 @@ def _sword_hit_slimes(player, slimes):
             slime.damage(item["damage"], source_velocity=kb_vel)
 
 
-def draw_hotbar(screen, player, font):
-    """绘制快捷栏"""
-    import assets
-
-    slot_size = 44
-    padding = 4
-    start_x = C.WINDOW_WIDTH * 0.5 - (C.HOTBAR_SIZE * (slot_size + padding)) * 0.5
-    start_y = C.WINDOW_HEIGHT - slot_size - 10
-
-    for i in range(C.HOTBAR_SIZE):
-        x = int(start_x + i * (slot_size + padding))
-        y = int(start_y)
-
-        # 尝试使用 GUI 精灵
-        if i == player.hotbar_index and assets.get_gui_selected_slot_surface():
-            screen.blit(assets.get_gui_selected_slot_surface(), (x - 2, y - 2))
-        elif assets.get_gui_slot_surface():
-            screen.blit(assets.get_gui_slot_surface(), (x - 2, y - 2))
-        else:
-            # 备用矩形
-            bg_color = (60, 60, 60) if i != player.hotbar_index else (90, 90, 90)
-            pygame.draw.rect(screen, bg_color, (x, y, slot_size, slot_size))
-            border_color = C.SLOT_SELECTED_COLOR if i == player.hotbar_index else C.SLOT_BORDER_COLOR
-            border_width = 2 if i == player.hotbar_index else 1
-            pygame.draw.rect(screen, border_color, (x, y, slot_size, slot_size), border_width)
-
-        # 物品图标
-        slot = player.hotbar[i]
-        if slot is not None:
-            icon = C.get_item_icon(slot["item_id"], size=slot_size - 8)
-            if icon:
-                icon_x = x + (slot_size - icon.get_width()) * 0.5
-                icon_y = y + (slot_size - icon.get_height()) * 0.5
-                screen.blit(icon, (icon_x, icon_y))
-            if slot["count"] > 1:
-                count_text = font.render(str(slot["count"]), True, (255, 255, 255))
-                screen.blit(count_text, (x + slot_size - count_text.get_width() - 2,
-                                         y + slot_size - count_text.get_height() - 1))
-
-
-def draw_health_bar(screen, player, font):
-    """绘制血条"""
-    bar_width = 200
-    bar_height = 20
-    x = C.WINDOW_WIDTH - bar_width - 10
-    y = 10
-
-    # 背景
-    pygame.draw.rect(screen, C.HEALTH_BAR_BG, (x, y, bar_width, bar_height))
-
-    # 血量
-    hp_ratio = max(0, player.hp / player.max_hp)
-    hp_width = int(bar_width * hp_ratio)
-    hp_color = (220, 30, 30) if hp_ratio < 0.3 else (50, 200, 50)
-    pygame.draw.rect(screen, hp_color, (x, y, hp_width, bar_height))
-
-    # 边框
-    pygame.draw.rect(screen, (200, 200, 200), (x, y, bar_width, bar_height), 1)
-
-    # 数字
-    hp_text = font.render(f"{player.hp}/{player.max_hp}", True, (255, 255, 255))
-    screen.blit(hp_text, (x + bar_width * 0.5 - hp_text.get_width() * 0.5,
-                           y + bar_height * 0.5 - hp_text.get_height() * 0.5))
-
-
 def _shoot_gun(player, projectiles, mouse_world_x, mouse_world_y):
-    """发射枪弹"""
-    # 查找弹药
     ammo_slot = player.find_ammo("Musket Ball")
     if ammo_slot is None:
         return
     slot_idx, _ = ammo_slot
 
-    # 计算方向
     dx = mouse_world_x - player.position[0]
     dy = mouse_world_y - player.position[1]
     dist = math.sqrt(dx * dx + dy * dy)
@@ -473,37 +400,132 @@ def _shoot_gun(player, projectiles, mouse_world_x, mouse_world_y):
 
     try:
         from assets import play_sound
-        play_sound("swing", 0.4)  # 临时用 swing 音效
+        play_sound("swing", 0.4)
     except Exception:
         pass
 
 
-def _draw_lamp_glow(screen, world, cam_x, cam_y, sky_color):
-    """绘制灯光发光效果"""
-    # 只在较暗时绘制（非白天或天空不够亮时）
-    brightness = (sky_color[0] + sky_color[1] + sky_color[2]) / 3
-    if brightness > 180:
-        return  # 白天不需要灯光
+def draw_hotbar(screen, player, font):
+    import assets
 
-    # 计算可见区域
-    half_w = C.WINDOW_WIDTH * 0.5
-    half_h = C.WINDOW_HEIGHT * 0.5
-    min_tx = max(0, int((cam_x - half_w) // C.BLOCKSIZE) - 5)
-    max_tx = min(world.width, int((cam_x + half_w) // C.BLOCKSIZE) + 5)
-    min_ty = max(0, int((cam_y - half_h) // C.BLOCKSIZE) - 5)
-    max_ty = min(world.height, int((cam_y + half_h) // C.BLOCKSIZE) + 5)
+    slot_size = 44
+    padding = 4
+    start_x = C.WINDOW_WIDTH * 0.5 - (C.HOTBAR_SIZE * (slot_size + padding)) * 0.5
+    start_y = C.WINDOW_HEIGHT - slot_size - 10
 
-    glow_radius = 60
-    glow_surf = pygame.Surface((glow_radius * 2, glow_radius * 2), pygame.SRCALPHA)
+    for i in range(C.HOTBAR_SIZE):
+        x = int(start_x + i * (slot_size + padding))
+        y = int(start_y)
 
-    for tx in range(min_tx, max_tx):
-        for ty in range(min_ty, max_ty):
-            if world.tile_data[tx][ty] == 15:  # Lamp
-                px = tx * C.BLOCKSIZE + C.BLOCKSIZE * 0.5 - cam_x + half_w
-                py = ty * C.BLOCKSIZE + C.BLOCKSIZE * 0.5 - cam_y + half_h
-                glow_surf.fill((0, 0, 0, 0))
-                alpha = max(30, int(160 * (1 - brightness / 180)))
-                pygame.draw.circle(glow_surf, (255, 240, 180, alpha),
-                                   (glow_radius, glow_radius), glow_radius)
-                screen.blit(glow_surf, (px - glow_radius, py - glow_radius),
-                            special_flags=pygame.BLEND_RGB_ADD)
+        if i == player.hotbar_index and assets.get_gui_selected_slot_surface():
+            screen.blit(assets.get_gui_selected_slot_surface(), (x - 2, y - 2))
+        elif assets.get_gui_slot_surface():
+            screen.blit(assets.get_gui_slot_surface(), (x - 2, y - 2))
+        else:
+            bg_color = (60, 60, 60) if i != player.hotbar_index else (90, 90, 90)
+            pygame.draw.rect(screen, bg_color, (x, y, slot_size, slot_size))
+            border_color = C.SLOT_SELECTED_COLOR if i == player.hotbar_index else C.SLOT_BORDER_COLOR
+            border_width = 2 if i == player.hotbar_index else 1
+            pygame.draw.rect(screen, border_color, (x, y, slot_size, slot_size), border_width)
+
+        slot = player.hotbar[i]
+        _draw_slot_item(screen, slot, x, y, slot_size, font)
+
+
+def draw_health_bar(screen, player, font):
+    bar_width = 200
+    bar_height = 20
+    x = C.WINDOW_WIDTH - bar_width - 10
+    y = 10
+
+    pygame.draw.rect(screen, C.HEALTH_BAR_BG, (x, y, bar_width, bar_height))
+    hp_ratio = max(0, player.hp / player.max_hp)
+    hp_width = int(bar_width * hp_ratio)
+    hp_color = (220, 30, 30) if hp_ratio < 0.3 else (50, 200, 50)
+    pygame.draw.rect(screen, hp_color, (x, y, hp_width, bar_height))
+    pygame.draw.rect(screen, (200, 200, 200), (x, y, bar_width, bar_height), 1)
+
+    hp_text = font.render(f"{player.hp}/{player.max_hp}", True, (255, 255, 255))
+    screen.blit(hp_text, (x + bar_width * 0.5 - hp_text.get_width() * 0.5,
+                           y + bar_height * 0.5 - hp_text.get_height() * 0.5))
+
+
+def _draw_slot_item(screen, slot, x, y, slot_size, font):
+    """绘制单个槽位的物品图标和数量"""
+    if slot is None:
+        return
+    icon = C.get_item_icon(slot["item_id"], size=slot_size - 8)
+    if icon:
+        screen.blit(icon, (x + (slot_size - icon.get_width()) * 0.5,
+                           y + (slot_size - icon.get_height()) * 0.5))
+    if slot["count"] > 1:
+        count_text = font.render(str(slot["count"]), True, (255, 255, 255))
+        screen.blit(count_text, (x + slot_size - count_text.get_width() - 2,
+                                 y + slot_size - count_text.get_height() - 1))
+
+
+def draw_inventory(screen, player, font, quit_rect):
+    """绘制物品栏覆盖层（ESC 打开，游戏暂停）"""
+    panel_w = 440
+    panel_h = 380
+    panel_x = int(C.WINDOW_WIDTH * 0.5 - panel_w * 0.5)
+    panel_y = int(C.WINDOW_HEIGHT * 0.5 - panel_h * 0.5)
+
+    # 半透明遮罩
+    overlay = pygame.Surface((C.WINDOW_WIDTH, C.WINDOW_HEIGHT), pygame.SRCALPHA)
+    overlay.fill((0, 0, 0, 150))
+    screen.blit(overlay, (0, 0))
+
+    # 面板背景
+    pygame.draw.rect(screen, (35, 35, 45), (panel_x, panel_y, panel_w, panel_h), border_radius=8)
+    pygame.draw.rect(screen, (100, 100, 120), (panel_x, panel_y, panel_w, panel_h), 2, border_radius=8)
+
+    # 标题
+    title = font.render("Inventory", True, (255, 255, 255))
+    screen.blit(title, (panel_x + 15, panel_y + 12))
+
+    slot_size = 44
+    padding = 4
+    cols = C.HOTBAR_SIZE
+    grid_w = cols * (slot_size + padding) - padding
+    start_x = int(panel_x + (panel_w - grid_w) * 0.5)
+
+    # 快捷栏行
+    hotbar_y = panel_y + 45
+    for i in range(C.HOTBAR_SIZE):
+        x = start_x + i * (slot_size + padding)
+        y = hotbar_y
+        bg = (50, 50, 50) if i != player.hotbar_index else (70, 70, 70)
+        pygame.draw.rect(screen, bg, (x, y, slot_size, slot_size), border_radius=3)
+        pygame.draw.rect(screen, (100, 100, 100), (x, y, slot_size, slot_size), 1, border_radius=3)
+        _draw_slot_item(screen, player.hotbar[i], x, y, slot_size, font)
+
+    # 物品栏网格（4行 × 8列 = 32槽）
+    inv_label = font.render("Items", True, (200, 200, 200))
+    screen.blit(inv_label, (start_x, hotbar_y + slot_size + padding + 8))
+
+    inv_start_y = hotbar_y + slot_size + padding + 30
+    inv_cols = cols
+    inv_rows = len(player.inventory) // inv_cols
+    for row in range(inv_rows):
+        for col in range(inv_cols):
+            idx = row * inv_cols + col
+            x = start_x + col * (slot_size + padding)
+            y = inv_start_y + row * (slot_size + padding)
+            pygame.draw.rect(screen, (45, 45, 45), (x, y, slot_size, slot_size), border_radius=3)
+            pygame.draw.rect(screen, (80, 80, 80), (x, y, slot_size, slot_size), 1, border_radius=3)
+            _draw_slot_item(screen, player.inventory[idx], x, y, slot_size, font)
+
+    # Quit 按钮
+    mouse_pos = pygame.mouse.get_pos()
+    hover = quit_rect.collidepoint(mouse_pos)
+    btn_color = (180, 60, 60) if hover else (120, 40, 40)
+    pygame.draw.rect(screen, btn_color, quit_rect, border_radius=6)
+    pygame.draw.rect(screen, (200, 200, 200), quit_rect, 1, border_radius=6)
+    quit_text = font.render("Quit", True, (255, 255, 255))
+    screen.blit(quit_text, (quit_rect.centerx - quit_text.get_width() * 0.5,
+                             quit_rect.centery - quit_text.get_height() * 0.5))
+
+    # 提示
+    hint = font.render("(ESC to close)", True, (150, 150, 150))
+    screen.blit(hint, (quit_rect.right + 10, quit_rect.y + 8))

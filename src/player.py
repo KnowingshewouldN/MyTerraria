@@ -32,6 +32,9 @@ class Player:
                 self.hotbar.append(None)
         self.hotbar_index = 0
 
+        # 物品栏（ESC 打开时显示）
+        self.inventory = [None] * 32  # 4行 × 8列
+
         # 攻击/使用状态
         self.use_cooldown = 0.0
         self.swinging = False
@@ -335,22 +338,35 @@ class Player:
         _play("swing", 0.4)
 
     def _add_item(self, item_id, count):
-        for i, slot in enumerate(self.hotbar):
+        """添加物品，优先快捷栏，溢出进入物品栏"""
+        remaining = self._add_to_list(self.hotbar, item_id, count)
+        if remaining > 0:
+            self._add_to_list(self.inventory, item_id, remaining)
+
+    def _add_to_list(self, item_list, item_id, count):
+        """向指定列表添加物品，返回剩余数量"""
+        item_info = C.ITEMS[item_id]
+        # 先尝试堆叠
+        for slot in item_list:
             if slot is not None and slot["item_id"] == item_id:
-                item_info = C.ITEMS[item_id]
                 if slot["count"] < item_info["max_stack"]:
                     can_add = min(count, item_info["max_stack"] - slot["count"])
                     slot["count"] += can_add
                     count -= can_add
                     if count <= 0:
-                        return
-        for i, slot in enumerate(self.hotbar):
+                        return 0
+        # 填充空槽
+        for i, slot in enumerate(item_list):
             if slot is None:
-                self.hotbar[i] = {"item_id": item_id, "count": count}
-                return
+                add_count = min(count, item_info["max_stack"])
+                item_list[i] = {"item_id": item_id, "count": add_count}
+                count -= add_count
+                if count <= 0:
+                    return 0
+        return count
 
     def add_item(self, item_id, count):
-        """公开接口：添加物品到快捷栏"""
+        """公开接口：添加物品"""
         self._add_item(item_id, count)
 
     def find_ammo(self, ammo_name):

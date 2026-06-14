@@ -90,7 +90,7 @@ DEFAULT_HOTBAR = [
     {"item_id": 4, "count": 99},
     {"item_id": 10, "count": 1},   # Musket
     {"item_id": 11, "count": 50},  # Musket Ball
-    {"item_id": 12, "count": 10},  # Lamp
+    None,
 ]
 
 HOTBAR_SIZE = 8
