@@ -326,6 +326,10 @@ def run(screen):
         if inventory_open:
             draw_inventory(screen, player, font, quit_rect)
 
+        # 鼠标悬停显示物品名称
+        if drag_data is None:
+            _draw_tooltip(screen, player, mouse_pos, font, inventory_open)
+
         # 拖动中的物品跟随鼠标
         if drag_data and drag_data["item"]:
             icon = C.get_item_icon(drag_data["item"]["item_id"], size=36)
@@ -468,19 +472,22 @@ def _slot_rects(inventory_open):
 
 
 def _place_dragged(player, drag_data, pos, inventory_open):
-    """将拖动中的物品放置到目标槽位（或放回原位）"""
     placed = False
     for rect, list_name, idx in _slot_rects(inventory_open):
         if rect.collidepoint(pos):
             dst_list = player.hotbar if list_name == "hotbar" else player.inventory
             src_list = player.hotbar if drag_data["list"] == "hotbar" else player.inventory
+            # 同一槽位：直接放回，不交换
+            if dst_list is src_list and idx == drag_data["index"]:
+                src_list[drag_data["index"]] = drag_data["item"]
+                placed = True
+                break
             target_item = dst_list[idx]
             dst_list[idx] = drag_data["item"]
             src_list[drag_data["index"]] = target_item
             placed = True
             break
     if not placed:
-        # 没点到任何槽位 → 放回原位
         src_list = player.hotbar if drag_data["list"] == "hotbar" else player.inventory
         src_list[drag_data["index"]] = drag_data["item"]
 
@@ -606,3 +613,36 @@ def draw_inventory(screen, player, font, quit_rect):
     # 提示
     hint = font.render("(ESC to close)", True, (150, 150, 150))
     screen.blit(hint, (quit_rect.right + 10, quit_rect.y + 8))
+
+
+def _draw_tooltip(screen, player, mouse_pos, font, inventory_open):
+    """鼠标悬停在物品槽上时显示物品名称"""
+    for rect, list_name, idx in _slot_rects(inventory_open):
+        if rect.collidepoint(mouse_pos):
+            item_list = player.hotbar if list_name == "hotbar" else player.inventory
+            slot = item_list[idx]
+            if slot is None:
+                return
+            item_info = C.ITEMS.get(slot["item_id"])
+            if item_info is None:
+                return
+            name = item_info["name"]
+
+            text_surf = font.render(name, True, (255, 255, 255))
+            pad = 6
+            box_w = text_surf.get_width() + pad * 2
+            box_h = text_surf.get_height() + pad * 2
+
+            tx = mouse_pos[0] + 14
+            ty = mouse_pos[1] + 14
+            if tx + box_w > C.WINDOW_WIDTH:
+                tx = mouse_pos[0] - box_w - 8
+            if ty + box_h > C.WINDOW_HEIGHT:
+                ty = mouse_pos[1] - box_h - 8
+
+            tip_box = pygame.Surface((box_w, box_h), pygame.SRCALPHA)
+            tip_box.fill((10, 10, 10, 200))
+            screen.blit(tip_box, (tx, ty))
+            pygame.draw.rect(screen, (180, 180, 180), (tx, ty, box_w, box_h), 1)
+            screen.blit(text_surf, (tx + pad, ty + pad))
+            return
