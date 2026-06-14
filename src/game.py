@@ -9,6 +9,9 @@ from world import World, generate_terrain, create_terrain_surface, tile_in_map
 from player import Player
 from slime import Slime
 
+SLOT_SIZE = 44
+SLOT_PAD = 4
+
 
 def run_menu(screen):
     """主菜单界面"""
@@ -110,6 +113,7 @@ def run(screen):
     old_ticks = pygame.time.get_ticks()
     game_time = 0.0
     inventory_open = False
+    drag_data = None  # {"list": "hotbar"/"inventory", "index": int, "item": {...}}
     running = True
 
     # Quit 按钮位置（固定）
@@ -168,17 +172,30 @@ def run(screen):
                     player.moving_down = False
 
             elif event.type == MOUSEBUTTONDOWN:
-                if inventory_open:
-                    if event.button == 1 and quit_rect.collidepoint(mouse_pos):
+                if event.button == 1:
+                    click_pos = event.pos
+                    if inventory_open and quit_rect.collidepoint(click_pos):
                         running = False
-                else:
-                    if event.button == 4:
-                        player.hotbar_index = (player.hotbar_index - 1) % C.HOTBAR_SIZE
-                    elif event.button == 5:
-                        player.hotbar_index = (player.hotbar_index + 1) % C.HOTBAR_SIZE
+                    elif drag_data is not None:
+                        # 拖动中再次点击：放置/交换
+                        _place_dragged(player, drag_data, click_pos, inventory_open)
+                        drag_data = None
+                    else:
+                        # 无拖动：拾起
+                        for rect, list_name, idx in _slot_rects(inventory_open):
+                            if rect.collidepoint(click_pos):
+                                item_list = player.hotbar if list_name == "hotbar" else player.inventory
+                                if item_list[idx] is not None:
+                                    drag_data = {"list": list_name, "index": idx, "item": item_list[idx]}
+                                    item_list[idx] = None
+                                break
+                elif event.button == 4 and not drag_data:
+                    player.hotbar_index = (player.hotbar_index - 1) % C.HOTBAR_SIZE
+                elif event.button == 5 and not drag_data:
+                    player.hotbar_index = (player.hotbar_index + 1) % C.HOTBAR_SIZE
 
-        # ===== 游戏逻辑（暂停时跳过）=====
-        if not inventory_open:
+        # ===== 游戏逻辑（暂停/拖动时跳过）=====
+        if not inventory_open and drag_data is None:
             # 鼠标持续按下
             if pygame.mouse.get_pressed()[0]:
                 slot = player.hotbar[player.hotbar_index]
@@ -309,6 +326,17 @@ def run(screen):
         if inventory_open:
             draw_inventory(screen, player, font, quit_rect)
 
+        # 拖动中的物品跟随鼠标
+        if drag_data and drag_data["item"]:
+            icon = C.get_item_icon(drag_data["item"]["item_id"], size=36)
+            if icon:
+                screen.blit(icon, (mouse_pos[0] - icon.get_width() * 0.5,
+                                   mouse_pos[1] - icon.get_height() * 0.5))
+            count = drag_data["item"].get("count", 1)
+            if count > 1:
+                cnt_text = font.render(str(count), True, (255, 255, 255))
+                screen.blit(cnt_text, (mouse_pos[0] + 12, mouse_pos[1] + 8))
+
         pygame.display.flip()
         clock.tick(C.FPS)
 
@@ -405,16 +433,66 @@ def _shoot_gun(player, projectiles, mouse_world_x, mouse_world_y):
         pass
 
 
+def _slot_rects(inventory_open):
+    """返回当前可见槽位列表: [(rect, list_name, index), ...]"""
+    result = []
+    if inventory_open:
+        panel_w = 440
+        panel_h = 380
+        panel_x = int(C.WINDOW_WIDTH * 0.5 - panel_w * 0.5)
+        panel_y = int(C.WINDOW_HEIGHT * 0.5 - panel_h * 0.5)
+        cols = C.HOTBAR_SIZE
+        grid_w = cols * (SLOT_SIZE + SLOT_PAD) - SLOT_PAD
+        sx = int(panel_x + (panel_w - grid_w) * 0.5)
+
+        # 面板内快捷栏行
+        hy = panel_y + 45
+        for i in range(cols):
+            result.append((pygame.Rect(sx + i * (SLOT_SIZE + SLOT_PAD), hy, SLOT_SIZE, SLOT_SIZE), "hotbar", i))
+
+        # 面板内物品栏网格
+        iy = hy + SLOT_SIZE + SLOT_PAD + 30
+        for row in range(4):
+            for col in range(cols):
+                idx = row * cols + col
+                result.append((pygame.Rect(sx + col * (SLOT_SIZE + SLOT_PAD),
+                                           iy + row * (SLOT_SIZE + SLOT_PAD),
+                                           SLOT_SIZE, SLOT_SIZE), "inventory", idx))
+    else:
+        # 底部快捷栏
+        sx = C.WINDOW_WIDTH * 0.5 - (C.HOTBAR_SIZE * (SLOT_SIZE + SLOT_PAD)) * 0.5
+        sy = C.WINDOW_HEIGHT - SLOT_SIZE - 10
+        for i in range(C.HOTBAR_SIZE):
+            result.append((pygame.Rect(int(sx + i * (SLOT_SIZE + SLOT_PAD)), int(sy), SLOT_SIZE, SLOT_SIZE), "hotbar", i))
+    return result
+
+
+def _place_dragged(player, drag_data, pos, inventory_open):
+    """将拖动中的物品放置到目标槽位（或放回原位）"""
+    placed = False
+    for rect, list_name, idx in _slot_rects(inventory_open):
+        if rect.collidepoint(pos):
+            dst_list = player.hotbar if list_name == "hotbar" else player.inventory
+            src_list = player.hotbar if drag_data["list"] == "hotbar" else player.inventory
+            target_item = dst_list[idx]
+            dst_list[idx] = drag_data["item"]
+            src_list[drag_data["index"]] = target_item
+            placed = True
+            break
+    if not placed:
+        # 没点到任何槽位 → 放回原位
+        src_list = player.hotbar if drag_data["list"] == "hotbar" else player.inventory
+        src_list[drag_data["index"]] = drag_data["item"]
+
+
 def draw_hotbar(screen, player, font):
     import assets
 
-    slot_size = 44
-    padding = 4
-    start_x = C.WINDOW_WIDTH * 0.5 - (C.HOTBAR_SIZE * (slot_size + padding)) * 0.5
-    start_y = C.WINDOW_HEIGHT - slot_size - 10
+    start_x = C.WINDOW_WIDTH * 0.5 - (C.HOTBAR_SIZE * (SLOT_SIZE + SLOT_PAD)) * 0.5
+    start_y = C.WINDOW_HEIGHT - SLOT_SIZE - 10
 
     for i in range(C.HOTBAR_SIZE):
-        x = int(start_x + i * (slot_size + padding))
+        x = int(start_x + i * (SLOT_SIZE + SLOT_PAD))
         y = int(start_y)
 
         if i == player.hotbar_index and assets.get_gui_selected_slot_surface():
@@ -423,13 +501,12 @@ def draw_hotbar(screen, player, font):
             screen.blit(assets.get_gui_slot_surface(), (x - 2, y - 2))
         else:
             bg_color = (60, 60, 60) if i != player.hotbar_index else (90, 90, 90)
-            pygame.draw.rect(screen, bg_color, (x, y, slot_size, slot_size))
+            pygame.draw.rect(screen, bg_color, (x, y, SLOT_SIZE, SLOT_SIZE))
             border_color = C.SLOT_SELECTED_COLOR if i == player.hotbar_index else C.SLOT_BORDER_COLOR
             border_width = 2 if i == player.hotbar_index else 1
-            pygame.draw.rect(screen, border_color, (x, y, slot_size, slot_size), border_width)
+            pygame.draw.rect(screen, border_color, (x, y, SLOT_SIZE, SLOT_SIZE), border_width)
 
-        slot = player.hotbar[i]
-        _draw_slot_item(screen, slot, x, y, slot_size, font)
+        _draw_slot_item(screen, player.hotbar[i], x, y, SLOT_SIZE, font)
 
 
 def draw_health_bar(screen, player, font):
@@ -484,8 +561,8 @@ def draw_inventory(screen, player, font, quit_rect):
     title = font.render("Inventory", True, (255, 255, 255))
     screen.blit(title, (panel_x + 15, panel_y + 12))
 
-    slot_size = 44
-    padding = 4
+    slot_size = SLOT_SIZE
+    padding = SLOT_PAD
     cols = C.HOTBAR_SIZE
     grid_w = cols * (slot_size + padding) - padding
     start_x = int(panel_x + (panel_w - grid_w) * 0.5)
