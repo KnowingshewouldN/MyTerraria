@@ -59,6 +59,9 @@ class Player:
         # 走路音效
         self.run_sound_timer = 0.0
 
+        # 待生成的掉落物（game.py 读取后清空，用于把挖掘产出变成实体掉落）
+        self.pending_drops = []
+
         # 方块坐标缓存
         self.block_x = 0
         self.block_y = 0
@@ -289,7 +292,13 @@ class Player:
             update_tile(terrain_surface, world, tx, ty)
 
             if drop_item_id is not None:
-                self._add_item(drop_item_id, 1)
+                # 产出实体掉落物（由 game.py 读取 pending_drops 生成 Drop）
+                self.pending_drops.append({
+                    "item_id": drop_item_id,
+                    "count": 1,
+                    "pos": (tx * C.BLOCKSIZE + C.BLOCKSIZE * 0.5,
+                            ty * C.BLOCKSIZE + C.BLOCKSIZE * 0.5),
+                })
 
             _play("tink", 0.4)
             self.mining_target = None
@@ -368,6 +377,13 @@ class Player:
     def add_item(self, item_id, count):
         """公开接口：添加物品"""
         self._add_item(item_id, count)
+
+    def add_item_returning(self, item_id, count):
+        """添加物品，返回未能装入的剩余数量（库存满时 > 0）"""
+        remaining = self._add_to_list(self.hotbar, item_id, count)
+        if remaining > 0:
+            remaining = self._add_to_list(self.inventory, item_id, remaining)
+        return remaining
 
     def find_ammo(self, ammo_name):
         """在快捷栏中查找指定弹药，返回 (slot_index, count) 或 None"""

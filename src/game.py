@@ -8,6 +8,7 @@ from pygame.locals import *
 from world import World, generate_terrain, create_terrain_surface, tile_in_map
 from player import Player
 from slime import Slime
+from drop import Drop
 
 SLOT_SIZE = 44
 SLOT_PAD = 4
@@ -100,6 +101,10 @@ def run(screen):
 
     # 弹射体
     projectiles = []
+
+    # 物品掉落物 + 头顶飘字
+    drops = []
+    floating_texts = []
 
     # 史莱姆管理
     slimes = []
@@ -234,7 +239,7 @@ def run(screen):
                 slime.update(world, player_pos, dt)
                 if slime.drop_queue:
                     for drop in slime.drop_queue:
-                        player.add_item(drop["item_id"], drop["count"])
+                        drops.append(Drop(slime.position, drop["item_id"], drop["count"]))
                     slime.drop_queue = []
             slimes = [s for s in slimes if s.alive]
 
@@ -261,6 +266,41 @@ def run(screen):
                 if proj["life"] <= 0:
                     proj["alive"] = False
             projectiles = [p for p in projectiles if p["alive"]]
+
+            # 玩家挖掘产出的掉落物 -> 实体
+            if player.pending_drops:
+                for d in player.pending_drops:
+                    drops.append(Drop(d["pos"], d["item_id"], d["count"]))
+                player.pending_drops = []
+
+            # 更新掉落物 + 拾取判定
+            for drop in drops:
+                drop.update(world, player.position, player.rect, dt)
+                if drop.alive and drop.can_pickup() and drop.rect.colliderect(player.rect):
+                    remaining = player.add_item_returning(drop.item_id, drop.count)
+                    added = drop.count - remaining
+                    if added > 0:
+                        drop.alive = False
+                        floating_texts.append({
+                            "text": f"+{added} {C.ITEMS[drop.item_id]['name']}",
+                            "x": player.position[0],
+                            "y": player.position[1] - C.PLAYER_HEIGHT * 0.5 - 4,
+                            "vy": -24,
+                            "life": 1.4,
+                            "max_life": 1.4,
+                            "color": (255, 255, 120),
+                        })
+                    else:
+                        # 库存满：短暂推开避免卡住
+                        drop.nudge_away(player.position)
+            drops = [d for d in drops if d.alive]
+
+            # 更新头顶飘字
+            for ft in floating_texts:
+                ft["y"] += ft["vy"] * dt
+                ft["vy"] *= (1.0 - dt * 2.0)
+                ft["life"] -= dt
+            floating_texts = [f for f in floating_texts if f["life"] > 0]
 
         # 更新摄像机
         cam_x = player.position[0]
@@ -301,12 +341,26 @@ def run(screen):
         for slime in slimes:
             slime.draw(screen, cam_x, cam_y)
 
+        # 物品掉落物
+        for drop in drops:
+            drop.draw(screen, cam_x, cam_y)
+
         # 玩家
         player.draw(screen, cam_x, cam_y)
 
         # 挖掘进度条
         if not inventory_open:
             player.draw_mining_progress(screen, cam_x, cam_y)
+
+        # 头顶飘字（世界坐标 -> 屏幕）
+        for ft in floating_texts:
+            sx = ft["x"] - cam_x + C.WINDOW_WIDTH * 0.5
+            sy = ft["y"] - cam_y + C.WINDOW_HEIGHT * 0.5
+            alpha = max(0.0, min(1.0, ft["life"] / ft["max_life"]))
+            text_surf = font.render(ft["text"], True, ft["color"])
+            text_surf.set_alpha(int(255 * alpha))
+            screen.blit(text_surf, (sx - text_surf.get_width() * 0.5,
+                                    sy - text_surf.get_height() * 0.5))
 
         # ===== UI =====
         draw_hotbar(screen, player, font)
