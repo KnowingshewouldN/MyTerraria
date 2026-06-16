@@ -169,6 +169,12 @@ def run(screen):
                         running = False
                     else:
                         inventory_open = not inventory_open
+                elif event.key == K_RETURN and game_state == "victory":
+                    # 胜利后进入 3D 体素场景
+                    import scene3d
+                    assets.stop_music()
+                    scene3d.run_epilogue(font)
+                    running = False  # 3D 结束后回到主菜单
                 elif not inventory_open and game_state == "playing":
                     if event.key == K_a:
                         player.moving_left = True
@@ -872,15 +878,16 @@ def draw_end_overlay(screen, game_state, font, small_font):
     if game_state == "victory":
         title = font.render("VICTORY!", True, (255, 220, 80))
         sub = small_font.render("You defeated the King Slime.", True, (220, 220, 220))
+        hint = small_font.render("ENTER: enter the 3D world   |   ESC: return to menu", True, (200, 220, 140))
     else:
         title = font.render("YOU DIED", True, (220, 40, 40))
         sub = small_font.render("The slime swarm overwhelmed you.", True, (200, 200, 200))
+        hint = small_font.render("Press ESC to return to menu", True, (180, 180, 180))
 
     screen.blit(title, (C.WINDOW_WIDTH * 0.5 - title.get_width() * 0.5,
                         C.WINDOW_HEIGHT * 0.4 - title.get_height() * 0.5))
     screen.blit(sub, (C.WINDOW_WIDTH * 0.5 - sub.get_width() * 0.5,
                       C.WINDOW_HEIGHT * 0.4 + title.get_height() * 0.5 + 8))
 
-    hint = small_font.render("Press ESC to return to menu", True, (180, 180, 180))
     screen.blit(hint, (C.WINDOW_WIDTH * 0.5 - hint.get_width() * 0.5,
                        C.WINDOW_HEIGHT * 0.6))
