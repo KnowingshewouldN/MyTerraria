@@ -46,6 +46,8 @@ class Slime:
 
         # 掉落物队列（game.py 读取后清空）
         self.drop_queue = []
+        # 死亡是否已计入击杀数（game.py 用）
+        self._counted = False
 
     def update(self, world, player_pos, dt):
         if not self.alive:

@@ -38,6 +38,9 @@ player_arm_sprites = []  # 手臂精灵（40帧：20朝右 + 20朝左）
 # 史莱姆精灵（5种×3帧 = 15帧，放大2x）
 slime_surfaces = []
 
+# King Slime Boss 精灵（King_Slime.gif 抽帧）
+king_slime_frames = []
+
 # 字体
 font_small = None
 font_default = None
@@ -58,6 +61,7 @@ def init():
     _load_hair_surfaces()
     _load_slime_surfaces()
     _render_player_sprites()
+    _load_king_slime_frames()
     _load_fonts()
     try:
         pygame.mixer.init()
@@ -214,6 +218,30 @@ def _load_slime_surfaces():
             slime_surfaces.append(surf)
 
 
+def _load_king_slime_frames():
+    """加载 King Slime Boss 动画帧（King_Slime.gif，PIL 抽帧）"""
+    global king_slime_frames
+    king_slime_frames = []
+    gif_path = os.path.join(os.path.dirname(RES_PATH), "King_Slime.gif")
+    if not os.path.exists(gif_path):
+        return
+    try:
+        from PIL import Image
+    except Exception:
+        print("Pillow 未安装，King Slime 使用备用渲染")
+        return
+    try:
+        im = Image.open(gif_path)
+        n = getattr(im, "n_frames", 1)
+        for i in range(n):
+            im.seek(i)
+            frame = im.convert("RGBA")
+            surf = pygame.image.frombytes(frame.tobytes(), frame.size, "RGBA").convert_alpha()
+            king_slime_frames.append(surf)
+    except Exception as e:
+        print("King Slime gif 解析失败:", e)
+
+
 def play_music(filename, volume=0.5, loops=-1):
     """播放背景音乐"""
     try:
@@ -356,18 +384,22 @@ def play_sound(name, volume=0.5):
     if os.path.exists(base_path):
         filepath = base_path
     else:
-        variants = []
-        i = 0
-        while True:
-            vpath = os.path.join(SOUNDS_PATH, f"{name}_{i}.wav")
-            if os.path.exists(vpath):
-                variants.append(vpath)
-                i += 1
-            else:
-                break
-        if not variants:
-            return
-        filepath = random.choice(variants)
+        single = os.path.join(SOUNDS_PATH, f"{name}.wav")
+        if os.path.exists(single):
+            filepath = single
+        else:
+            variants = []
+            i = 0
+            while True:
+                vpath = os.path.join(SOUNDS_PATH, f"{name}_{i}.wav")
+                if os.path.exists(vpath):
+                    variants.append(vpath)
+                    i += 1
+                else:
+                    break
+            if not variants:
+                return
+            filepath = random.choice(variants)
     if filepath not in sound_cache:
         try:
             sound_cache[filepath] = pygame.mixer.Sound(filepath)

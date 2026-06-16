@@ -105,6 +105,15 @@ DAY_DURATION = 30.0
 NIGHT_DURATION = 15.0
 DAY_NIGHT_CYCLE = DAY_DURATION + NIGHT_DURATION
 
+# Boss / 战斗
+KILL_THRESHOLD = 10          # 击杀多少只史莱姆后召唤 Boss
+BOSS_MAX_HP = 10000
+SLIME_DAMAGE = 4             # 普通史莱姆接触伤害
+BOSS_DAMAGE = 8             # Boss 接触伤害
+PLAYER_INVULN = 0.8          # 受伤后无敌秒数
+BOSS_SPLIT_RATIO = (0.66, 0.33)   # 触发分裂的 HP 比例阈值
+BOSS_CONTACT_KNOCK = 14      # 玩家被 Boss 击退速度
+
 # 颜色
 SKY_COLOR = (135, 206, 235)
 SLOT_BG_COLOR = (40, 40, 40)

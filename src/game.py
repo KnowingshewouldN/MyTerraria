@@ -9,6 +9,7 @@ from world import World, generate_terrain, create_terrain_surface, tile_in_map
 from player import Player
 from slime import Slime
 from drop import Drop
+from boss import KingSlime
 
 SLOT_SIZE = 44
 SLOT_PAD = 4
@@ -109,7 +110,15 @@ def run(screen):
     # 史莱姆管理
     slimes = []
     slime_spawn_timer = 3.0
-    max_slimes = 5
+    max_slimes = 5  # 这里修改史莱姆上限
+
+    # Boss / 游戏流程
+    slimes_killed = 0
+    boss = None
+    boss_spawned = False
+    boss_defeated = False
+    summon_msg_timer = 0.0
+    game_state = "playing"  # playing / victory / defeat
 
     # 摄像机
     cam_x = player.position[0]
@@ -155,8 +164,12 @@ def run(screen):
 
             elif event.type == KEYDOWN:
                 if event.key == K_ESCAPE:
-                    inventory_open = not inventory_open
-                elif not inventory_open:
+                    if game_state != "playing":
+                        # 胜负界面：ESC 返回主菜单
+                        running = False
+                    else:
+                        inventory_open = not inventory_open
+                elif not inventory_open and game_state == "playing":
                     if event.key == K_a:
                         player.moving_left = True
                     elif event.key == K_d:
@@ -199,8 +212,8 @@ def run(screen):
                 elif event.button == 5 and not drag_data:
                     player.hotbar_index = (player.hotbar_index + 1) % C.HOTBAR_SIZE
 
-        # ===== 游戏逻辑（暂停/拖动时跳过）=====
-        if not inventory_open and drag_data is None:
+        # ===== 游戏逻辑（暂停/拖动/胜负界面时跳过）=====
+        if game_state == "playing" and not inventory_open and drag_data is None:
             # 鼠标持续按下
             if pygame.mouse.get_pressed()[0]:
                 slot = player.hotbar[player.hotbar_index]
@@ -216,32 +229,85 @@ def run(screen):
                 player.mining_target = None
                 player.mining_progress = 0
 
-            # 挥剑攻击史莱姆
+            # 挥剑攻击史莱姆 + Boss
             if player.swinging and player.use_cooldown > 0:
                 slot = player.hotbar[player.hotbar_index]
                 if slot is not None:
                     item = C.ITEMS[slot["item_id"]]
                     if item["is_sword"]:
                         _sword_hit_slimes(player, slimes)
+                        if boss is not None and boss.alive and not boss.dying:
+                            _sword_hit_boss(player, boss, item["damage"])
 
             # 更新玩家
             player.update(world, dt)
 
-            # 史莱姆生成
-            slime_spawn_timer -= dt
-            if slime_spawn_timer <= 0 and len(slimes) < max_slimes:
-                slime_spawn_timer = 5.0 + random.random() * 5.0
-                _spawn_slime(slimes, player, world)
+            # 史莱姆生成（Boss 战中停止自然刷新）
+            if not boss_spawned:
+                slime_spawn_timer -= dt
+                if slime_spawn_timer <= 0 and len(slimes) < max_slimes:
+                    slime_spawn_timer = 2.0 + random.random() * 2.0 # 这里修改史莱姆生成速度
+                    _spawn_slime(slimes, player, world)
 
-            # 更新史莱姆
+            # 召唤 Boss
+            if not boss_spawned and slimes_killed >= C.KILL_THRESHOLD:
+                boss_spawned = True
+                boss = _spawn_boss(player, world)
+                summon_msg_timer = 3.0
+                try:
+                    assets.play_sound("npc_killed", 0.6)
+                except Exception:
+                    pass
+
+            # 更新史莱姆 + 统计击杀 + 处理 Boss 分裂产出
             player_pos = player.position
             for slime in slimes:
                 slime.update(world, player_pos, dt)
+                if slime.dying and not slime._counted:
+                    slime._counted = True
+                    slimes_killed += 1
                 if slime.drop_queue:
                     for drop in slime.drop_queue:
                         drops.append(Drop(slime.position, drop["item_id"], drop["count"]))
                     slime.drop_queue = []
             slimes = [s for s in slimes if s.alive]
+
+            # 更新 Boss
+            if boss is not None:
+                boss.update(world, player_pos, dt)
+                if boss.spawn_minions_queue:
+                    for m in boss.spawn_minions_queue:
+                        slimes.append(Slime(m["pos"], m["slime_type"]))
+                    boss.spawn_minions_queue = []
+                if boss.drop_queue:
+                    for drop in boss.drop_queue:
+                        drops.append(Drop(boss.position, drop["item_id"], drop["count"]))
+                    boss.drop_queue = []
+                if not boss.alive and not boss_defeated:
+                    boss_defeated = True
+                    game_state = "victory"
+
+            # 接触伤害：史莱姆 + Boss
+            if player.alive and player.invuln_timer <= 0:
+                for slime in slimes:
+                    if not slime.alive or slime.dying:
+                        continue
+                    if slime.rect.colliderect(player.rect):
+                        player.damage(C.SLIME_DAMAGE, source_x=slime.position[0],
+                                      knockback=10)
+                        break
+                if (boss is not None and boss.alive and not boss.dying
+                        and player.invuln_timer <= 0
+                        and boss.rect.colliderect(player.rect)):
+                    player.damage(C.BOSS_DAMAGE, source_x=boss.position[0])
+
+            # 玩家死亡 -> 失败
+            if not player.alive:
+                game_state = "defeat"
+
+            # 召唤提示倒计时
+            if summon_msg_timer > 0:
+                summon_msg_timer -= dt
 
             # 更新弹射体
             for proj in projectiles:
@@ -254,15 +320,20 @@ def run(screen):
                     tile_info = C.TILES.get(world.tile_data[tx][ty])
                     if tile_info and tile_info["solid"]:
                         proj["alive"] = False
+                proj_rect = pygame.Rect(proj["x"] - 3, proj["y"] - 3, 6, 6)
                 for slime in slimes:
                     if not slime.alive or slime.dying:
                         continue
-                    proj_rect = pygame.Rect(proj["x"] - 3, proj["y"] - 3, 6, 6)
                     if proj_rect.colliderect(slime.rect):
                         kb_dir = 1 if slime.position[0] > player.position[0] else -1
                         slime.damage(proj["damage"], source_velocity=(kb_dir * 80, -40))
                         proj["alive"] = False
                         break
+                if proj["alive"] and boss is not None and boss.alive and not boss.dying:
+                    if proj_rect.colliderect(boss.rect):
+                        kb_dir = 1 if boss.position[0] > player.position[0] else -1
+                        boss.damage(proj["damage"], source_velocity=(kb_dir * 80, -40))
+                        proj["alive"] = False
                 if proj["life"] <= 0:
                     proj["alive"] = False
             projectiles = [p for p in projectiles if p["alive"]]
@@ -290,6 +361,10 @@ def run(screen):
                             "max_life": 1.4,
                             "color": (255, 255, 120),
                         })
+                        try:
+                            assets.play_sound("grab", 0.4)
+                        except Exception:
+                            pass
                     else:
                         # 库存满：短暂推开避免卡住
                         drop.nudge_away(player.position)
@@ -341,6 +416,10 @@ def run(screen):
         for slime in slimes:
             slime.draw(screen, cam_x, cam_y)
 
+        # Boss
+        if boss is not None:
+            boss.draw(screen, cam_x, cam_y)
+
         # 物品掉落物
         for drop in drops:
             drop.draw(screen, cam_x, cam_y)
@@ -375,6 +454,26 @@ def run(screen):
         coord_text = small_font.render(
             f"Pos: ({player.block_x}, {player.block_y})  Slimes: {len(slimes)}  {time_label}", True, (255, 255, 255))
         screen.blit(coord_text, (5, 22))
+
+        # ===== 击杀计数 / Boss HP 条 =====
+        if not boss_spawned and game_state == "playing":
+            kill_text = font.render(
+                f"Slimes: {slimes_killed} / {C.KILL_THRESHOLD}", True, (255, 230, 120))
+            screen.blit(kill_text, (C.WINDOW_WIDTH * 0.5 - kill_text.get_width() * 0.5, 10))
+        elif boss is not None and (boss.alive or boss.dying):
+            draw_boss_hp_bar(screen, boss, font)
+
+        # 召唤提示
+        if summon_msg_timer > 0:
+            alpha = max(0.0, min(1.0, summon_msg_timer / 3.0))
+            msg = font.render("King Slime has appeared!", True, (255, 80, 80))
+            msg.set_alpha(int(255 * alpha))
+            screen.blit(msg, (C.WINDOW_WIDTH * 0.5 - msg.get_width() * 0.5,
+                              C.WINDOW_HEIGHT * 0.18))
+
+        # ===== 胜负界面 =====
+        if game_state != "playing":
+            draw_end_overlay(screen, game_state, font, small_font)
 
         # ===== 物品栏覆盖层 =====
         if inventory_open:
@@ -419,6 +518,22 @@ def _spawn_slime(slimes, player, world):
     slimes.append(Slime((spawn_x, spawn_y), slime_type))
 
 
+def _spawn_boss(player, world):
+    """在玩家一侧屏幕外召唤 King Slime，落在地表"""
+    from boss import BOSS_W, BOSS_H
+    side = random.choice([-1, 1])
+    spawn_x = player.position[0] + side * 16 * C.BLOCKSIZE
+    bx = int(spawn_x // C.BLOCKSIZE)
+    bx = max(2, min(world.width - 3, bx))
+    by = 0
+    for y in range(world.height):
+        if world.tile_data[bx][y] != C.AIR:
+            by = y
+            break
+    spawn_y = by * C.BLOCKSIZE - BOSS_H * 0.5 - 4
+    return KingSlime((spawn_x, spawn_y))
+
+
 def _sword_hit_slimes(player, slimes):
     if not player.swinging:
         return
@@ -448,6 +563,23 @@ def _sword_hit_slimes(player, slimes):
             slime.velocity[0] = kb_dir * 15
             slime.velocity[1] = -20
             slime.damage(item["damage"], source_velocity=kb_vel)
+
+
+def _sword_hit_boss(player, boss, damage):
+    """剑挥击命中 Boss：用更大的判定范围"""
+    if not player.swinging or not boss.alive or boss.dying:
+        return
+    reach_px = C.PLAYER_REACH * C.BLOCKSIZE * 0.7
+    if player.direction == 1:
+        hit_rect = pygame.Rect(player.position[0], player.position[1] - C.PLAYER_HEIGHT * 0.5,
+                               reach_px, C.PLAYER_HEIGHT)
+    else:
+        hit_rect = pygame.Rect(player.position[0] - reach_px,
+                               player.position[1] - C.PLAYER_HEIGHT * 0.5,
+                               reach_px, C.PLAYER_HEIGHT)
+    if hit_rect.colliderect(boss.rect):
+        kb_dir = 1 if boss.position[0] > player.position[0] else -1
+        boss.damage(damage, source_velocity=(kb_dir * 80, -60))
 
 
 def _shoot_gun(player, projectiles, mouse_world_x, mouse_world_y):
@@ -700,3 +832,48 @@ def _draw_tooltip(screen, player, mouse_pos, font, inventory_open):
             pygame.draw.rect(screen, (180, 180, 180), (tx, ty, box_w, box_h), 1)
             screen.blit(text_surf, (tx + pad, ty + pad))
             return
+
+
+def draw_boss_hp_bar(screen, boss, font):
+    """Boss 顶部 HP 条"""
+    bar_w = 500
+    bar_h = 22
+    x = int(C.WINDOW_WIDTH * 0.5 - bar_w * 0.5)
+    y = 38
+
+    name_surf = font.render("King Slime", True, (255, 230, 230))
+    screen.blit(name_surf, (x + bar_w * 0.5 - name_surf.get_width() * 0.5, y - name_surf.get_height() - 2))
+
+    pygame.draw.rect(screen, (40, 0, 0), (x, y, bar_w, bar_h))
+    ratio = max(0.0, boss.hp / boss.max_hp)
+    fill_w = int(bar_w * ratio)
+    fill_color = (200, 40, 40) if ratio < 0.33 else (220, 80, 80)
+    pygame.draw.rect(screen, fill_color, (x + 2, y + 2, max(0, fill_w - 4), bar_h - 4))
+    pygame.draw.rect(screen, (255, 200, 200), (x, y, bar_w, bar_h), 2)
+
+    hp_text = font.render(f"{int(boss.hp)} / {boss.max_hp}", True, (255, 255, 255))
+    screen.blit(hp_text, (x + bar_w * 0.5 - hp_text.get_width() * 0.5,
+                          y + bar_h * 0.5 - hp_text.get_height() * 0.5))
+
+
+def draw_end_overlay(screen, game_state, font, small_font):
+    """胜利/失败全屏覆盖"""
+    overlay = pygame.Surface((C.WINDOW_WIDTH, C.WINDOW_HEIGHT), pygame.SRCALPHA)
+    overlay.fill((0, 0, 0, 170))
+    screen.blit(overlay, (0, 0))
+
+    if game_state == "victory":
+        title = font.render("VICTORY!", True, (255, 220, 80))
+        sub = small_font.render("You defeated the King Slime.", True, (220, 220, 220))
+    else:
+        title = font.render("YOU DIED", True, (220, 40, 40))
+        sub = small_font.render("The slime swarm overwhelmed you.", True, (200, 200, 200))
+
+    screen.blit(title, (C.WINDOW_WIDTH * 0.5 - title.get_width() * 0.5,
+                        C.WINDOW_HEIGHT * 0.4 - title.get_height() * 0.5))
+    screen.blit(sub, (C.WINDOW_WIDTH * 0.5 - sub.get_width() * 0.5,
+                      C.WINDOW_HEIGHT * 0.4 + title.get_height() * 0.5 + 8))
+
+    hint = small_font.render("Press ESC to return to menu", True, (180, 180, 180))
+    screen.blit(hint, (C.WINDOW_WIDTH * 0.5 - hint.get_width() * 0.5,
+                       C.WINDOW_HEIGHT * 0.6))

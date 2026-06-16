@@ -17,6 +17,7 @@ class Player:
         self.hp = 100
         self.max_hp = 100
         self.alive = True
+        self.invuln_timer = 0.0  # 受伤后无敌帧
 
         # 移动状态
         self.moving_left = False
@@ -77,6 +78,8 @@ class Player:
         # 冷却计时
         if self.use_cooldown > 0:
             self.use_cooldown -= dt
+        if self.invuln_timer > 0:
+            self.invuln_timer -= dt
         if self.swinging:
             self.swing_timer -= dt
             self.swing_progress = 1.0 - max(0, self.swing_timer) / self.swing_duration
@@ -232,6 +235,22 @@ class Player:
             self.velocity[1] = C.JUMP_VELOCITY
             self.grounded = False
             _play("jump", 0.3)
+
+    def damage(self, amount, source_x=None, knockback=C.BOSS_CONTACT_KNOCK):
+        """受到伤害；处于无敌帧则忽略。source_x 用于计算击退方向。"""
+        if not self.alive or self.invuln_timer > 0:
+            return
+        self.hp -= amount
+        self.invuln_timer = C.PLAYER_INVULN
+        if source_x is not None:
+            kb_dir = 1 if self.position[0] >= source_x else -1
+            self.velocity[0] = kb_dir * knockback
+            self.velocity[1] = -22
+        _play("player_hit", 0.45)
+        if self.hp <= 0:
+            self.hp = 0
+            self.alive = False
+            _play("player_killed", 0.5)
 
     def use_item(self, world, mouse_tile, terrain_surface, dt):
         """根据手持物品执行操作，dt 用于挖掘进度"""
@@ -402,6 +421,9 @@ class Player:
 
     def draw(self, screen, cam_x, cam_y):
         """照搬原项目 draw() 逻辑"""
+        # 受伤无敌帧闪烁
+        if self.alive and self.invuln_timer > 0 and int(self.invuln_timer * 12) % 2 == 0:
+            return
         sx = self.position[0] - cam_x + C.WINDOW_WIDTH * 0.5
         sy = self.position[1] - cam_y + C.WINDOW_HEIGHT * 0.5
 
