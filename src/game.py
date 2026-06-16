@@ -301,9 +301,16 @@ def run(screen):
                         and boss.rect.colliderect(player.rect)):
                     player.damage(C.BOSS_DAMAGE, source_x=boss.position[0])
 
-            # 玩家死亡 -> 失败
+            # 玩家死亡 -> 原地重生（满血 + 短暂无敌，位置不变）
             if not player.alive:
-                game_state = "defeat"
+                player.hp = player.max_hp
+                player.alive = True
+                player.velocity = [0.0, 0.0]
+                player.invuln_timer = 2.5
+                player.swinging = False
+                player.use_cooldown = 0.0
+                player.mining_target = None
+                player.mining_progress = 0
 
             # 召唤提示倒计时
             if summon_msg_timer > 0:

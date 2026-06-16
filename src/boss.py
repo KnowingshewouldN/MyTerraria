@@ -93,79 +93,109 @@ class KingSlime:
             self._do_split(3)
             self.split_stage = 2
 
-        # AI：朝玩家大跳
+        # AI：纯跳跃移动（落地即停，绝不滑行/走路）
         if self.grounded:
+            # 站定时水平速度强制清零 —— 史莱姆只会跳，不在地面滑
+            self.velocity[0] = 0.0
             self.jump_tick -= dt
             if self.jump_tick <= 0:
-                self.jump_tick = 1.0 + random.random() * 0.6
+                big_leap = random.random() < 0.3
+                if big_leap:
+                    self.jump_tick = 0.7 + random.random() * 0.3
+                    h_speed = 24.0
+                    v_speed = -56.0
+                else:
+                    self.jump_tick = 0.45 + random.random() * 0.3
+                    h_speed = 19.0
+                    v_speed = -50.0
                 if player_pos[0] < self.position[0]:
-                    self.velocity[0] = -8
+                    self.velocity[0] = -h_speed
                     self.direction = -1
                 else:
-                    self.velocity[0] = 8
+                    self.velocity[0] = h_speed
                     self.direction = 1
-                self.velocity[1] = -48 + random.random() * 4
+                self.velocity[1] = v_speed + random.random() * 3
+                self.grounded = False
+        else:
+            # 空中持续朝玩家加速，保证跳跃水平跨度
+            air_dir = 1.0 if player_pos[0] > self.position[0] else -1.0
+            self.velocity[0] += air_dir * 12.0 * dt
+            if abs(self.velocity[0]) > 26.0:
+                self.velocity[0] = 26.0 if self.velocity[0] > 0 else -26.0
 
-        # 重力 + 阻力
+        # 重力（空中水平阻力极低，最大化跳跃距离）
         if not self.grounded:
             self.velocity[1] += C.GRAVITY * dt
-        drag = 1.0 - dt * 3
-        self.velocity[0] *= drag
-        self.velocity[1] *= (1.0 - dt)
+            self.velocity[0] *= (1.0 - dt * 0.35)
+        self.velocity[1] *= (1.0 - dt * 0.5)
 
-        self.position[0] += self.velocity[0] * dt * C.BLOCKSIZE
-        self.position[1] += self.velocity[1] * dt * C.BLOCKSIZE
-
-        self.rect.centerx = int(self.position[0])
-        self.rect.centery = int(self.position[1])
-        self.block_x = int(self.position[0] // C.BLOCKSIZE)
-        self.block_y = int(self.position[1] // C.BLOCKSIZE)
-
-        self.grounded = False
-
-        # 世界底
-        border_down = world.height * C.BLOCKSIZE - BOSS_H * 0.5
-        if self.position[1] > border_down:
-            self.position[1] = border_down
-            self.velocity[1] = 0
-            self.grounded = True
-
-        # 碰撞（Boss 较大，检查更宽范围）
+        # ---- 分轴碰撞（X 先动再解算，Y 再动再解算；大体积也不卡角）----
         from world import tile_in_map
-        for dy in range(-3, 4):
-            for dx in range(-4, 5):
+        half_w = self.rect.width * 0.5
+        half_h = self.rect.height * 0.5
+        # 检测范围按 Boss 尺寸动态计算，保证覆盖整个碰撞框
+        rx = int(self.rect.width // C.BLOCKSIZE) + 2
+        ry = int(self.rect.height // C.BLOCKSIZE) + 2
+
+        # X 轴
+        self.position[0] += self.velocity[0] * dt * C.BLOCKSIZE
+        self.rect.centerx = int(self.position[0])
+        self.block_x = int(self.position[0] // C.BLOCKSIZE)
+        for dy in range(-ry, ry + 1):
+            for dx in range(-rx, rx + 1):
                 tx = self.block_x + dx
                 ty = self.block_y + dy
                 if not tile_in_map(world, tx, ty) or ty < 0:
                     continue
-                tile_id = world.tile_data[tx][ty]
-                info = C.TILES.get(tile_id)
+                info = C.TILES.get(world.tile_data[tx][ty])
                 if info is None or not info["solid"]:
                     continue
-                block_rect = Rect(tx * C.BLOCKSIZE, ty * C.BLOCKSIZE,
-                                  C.BLOCKSIZE, C.BLOCKSIZE)
-                if not block_rect.colliderect(self.rect):
+                br = Rect(tx * C.BLOCKSIZE, ty * C.BLOCKSIZE, C.BLOCKSIZE, C.BLOCKSIZE)
+                if not br.colliderect(self.rect):
                     continue
-                delta_x = self.position[0] - block_rect.centerx
-                delta_y = self.position[1] - block_rect.centery
-                if abs(delta_x) > abs(delta_y):
-                    if delta_x > 0:
-                        self.position[0] = block_rect.right + self.rect.width * 0.5
-                    else:
-                        self.position[0] = block_rect.left - self.rect.width * 0.5
-                    self.velocity[0] = 0
-                else:
-                    if delta_y > 0:
-                        if self.velocity[1] < 0:
-                            self.position[1] = block_rect.bottom + self.rect.height * 0.5
-                            self.velocity[1] = 0
-                    else:
-                        if self.velocity[1] > 0:
-                            self.position[1] = block_rect.top - self.rect.height * 0.5 + 1
-                            self.velocity = [self.velocity[0] * 0.5, 0]
-                            self.grounded = True
+                if self.velocity[0] > 0:
+                    self.position[0] = br.left - half_w - 0.01
+                elif self.velocity[0] < 0:
+                    self.position[0] = br.right + half_w + 0.01
+                self.velocity[0] = 0
                 self.rect.centerx = int(self.position[0])
+                self.block_x = int(self.position[0] // C.BLOCKSIZE)
+
+        # Y 轴
+        self.position[1] += self.velocity[1] * dt * C.BLOCKSIZE
+        self.rect.centery = int(self.position[1])
+        self.block_y = int(self.position[1] // C.BLOCKSIZE)
+        self.grounded = False
+        for dy in range(-ry, ry + 1):
+            for dx in range(-rx, rx + 1):
+                tx = self.block_x + dx
+                ty = self.block_y + dy
+                if not tile_in_map(world, tx, ty) or ty < 0:
+                    continue
+                info = C.TILES.get(world.tile_data[tx][ty])
+                if info is None or not info["solid"]:
+                    continue
+                br = Rect(tx * C.BLOCKSIZE, ty * C.BLOCKSIZE, C.BLOCKSIZE, C.BLOCKSIZE)
+                if not br.colliderect(self.rect):
+                    continue
+                if self.velocity[1] > 0:
+                    self.position[1] = br.top - half_h - 0.01
+                    self.grounded = True
+                    self.velocity[0] = 0.0  # 落地立刻清零水平 —— 不滑行
+                elif self.velocity[1] < 0:
+                    self.position[1] = br.bottom + half_h + 0.01
+                self.velocity[1] = 0
                 self.rect.centery = int(self.position[1])
+                self.block_y = int(self.position[1] // C.BLOCKSIZE)
+
+        # 世界底兜底
+        border_down = world.height * C.BLOCKSIZE - half_h
+        if self.position[1] > border_down:
+            self.position[1] = border_down
+            self.velocity[1] = 0
+            self.grounded = True
+            self.rect.centery = int(self.position[1])
+            self.block_y = int(self.position[1] // C.BLOCKSIZE)
 
     def damage(self, value, source_velocity=None):
         if not self.alive or self.dying:

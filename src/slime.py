@@ -70,26 +70,34 @@ class Slime:
         if self.hurt_timer > 0:
             self.hurt_timer -= dt
 
-        # AI：朝玩家跳跃
+        # AI：纯跳跃移动（落地即停，绝不滑行/走路）
         if self.grounded:
+            # 站定时清零水平速度 —— 只会跳
+            self.velocity[0] = 0.0
             self.jump_tick -= dt
             if self.jump_tick <= 0:
-                self.jump_tick = 0.5 + random.random() * 0.5
+                self.jump_tick = 0.4 + random.random() * 0.4
+                h_speed = 14.0
                 if player_pos[0] < self.position[0]:
-                    self.velocity[0] = -10
+                    self.velocity[0] = -h_speed
                     self.direction = -1
                 else:
-                    self.velocity[0] = 10
+                    self.velocity[0] = h_speed
                     self.direction = 1
-                self.velocity[1] = -45 + random.random() * 5
+                self.velocity[1] = -48 + random.random() * 5
+                self.grounded = False
+        else:
+            # 空中朝玩家加速，保证跳跃跨度
+            air_dir = 1.0 if player_pos[0] > self.position[0] else -1.0
+            self.velocity[0] += air_dir * 10.0 * dt
+            if abs(self.velocity[0]) > 18.0:
+                self.velocity[0] = 18.0 if self.velocity[0] > 0 else -18.0
 
-        # 重力
+        # 重力（空中水平阻力极低）
         if not self.grounded:
             self.velocity[1] += C.GRAVITY * dt
-
-        drag = 1.0 - dt * 4
-        self.velocity[0] *= drag
-        self.velocity[1] *= (1.0 - dt)
+            self.velocity[0] *= (1.0 - dt * 0.4)
+        self.velocity[1] *= (1.0 - dt * 0.6)
 
         self.position[0] += self.velocity[0] * dt * C.BLOCKSIZE
         self.position[1] += self.velocity[1] * dt * C.BLOCKSIZE
@@ -141,7 +149,7 @@ class Slime:
                     else:
                         if self.velocity[1] > 0:
                             self.position[1] = block_rect.top - self.rect.height * 0.5 + 1
-                            self.velocity = [self.velocity[0] * 0.5, 0]
+                            self.velocity = [0.0, 0.0]  # 落地清零水平 —— 不滑行
                             self.grounded = True
 
                 self.rect.left = self.position[0] - self.rect.width * 0.5
