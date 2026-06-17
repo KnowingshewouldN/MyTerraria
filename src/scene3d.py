@@ -325,7 +325,8 @@ def run_epilogue(font):
         glLoadIdentity()
         _look_at_yaw_pitch(cam_pos, cam_yaw, cam_pitch)
 
-        # 地形 VBO
+        # 地形 VBO（不透明，关闭 alpha-test 避免树叶/草地纹理软边被丢弃）
+        glDisable(GL_ALPHA_TEST)
         glBindTexture(GL_TEXTURE_2D, atlas_tex)
         glBindBuffer(GL_ARRAY_BUFFER, vbo_id)
         stride = 8 * 4
@@ -341,9 +342,11 @@ def run_epilogue(font):
         glDisableClientState(GL_COLOR_ARRAY)
 
         # King Slime billboard（永远面向相机的圆柱公告板）
+        # 底部贴地：center.y = ground + half_height
         if king_tex is not None:
-            _draw_billboard(king_tex, (W * 0.5, height[W // 2][W // 2] + 1.0, W * 0.5),
-                            cam_pos, cam_yaw, 4.5, king_size)
+            king_h = 4.5
+            _draw_billboard(king_tex, (W * 0.5, height[W // 2][W // 2] + king_h * 0.5, W * 0.5),
+                            cam_pos, cam_yaw, king_h, king_size)
 
         # ---- HUD（正交投影）----
         _draw_hud(hud_tex, hud_surf.get_size())
@@ -389,6 +392,7 @@ def _sky_gl(color):
 
 def _draw_billboard(tex_id, world_pos, cam_pos, cam_yaw, height_world, tex_size):
     """圆柱形公告板：绕 Y 轴朝向相机"""
+    glEnable(GL_ALPHA_TEST)      # billboard 需要透明边缘丢弃
     glBindTexture(GL_TEXTURE_2D, tex_id)
     aspect = tex_size[0] / max(1, tex_size[1])
     half_w = height_world * aspect * 0.5
@@ -411,6 +415,7 @@ def _draw_billboard(tex_id, world_pos, cam_pos, cam_yaw, height_world, tex_size)
     glTexCoord2f(1, 1); glVertex3f(*p3)
     glTexCoord2f(0, 1); glVertex3f(*p4)
     glEnd()
+    glDisable(GL_ALPHA_TEST)
 
 
 def _draw_hud(hud_tex, hud_size):
