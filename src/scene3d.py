@@ -119,6 +119,88 @@ def _surface_to_texture(surface, flip=True, opaque=False):
     return tex
 
 
+# ---- 手持物品 / 热栏 ----
+# 热栏布局：槽 0=稿子，槽 1=剑，槽 2-7=方块（对应 PLACEABLE_BLOCKS）
+HOTBAR_SLOTS = 8
+BLOCK_SLOT_BASE = 2                       # 槽 2 开始是方块
+HELD_ICON_PX = 96                         # 手持物品屏幕贴片边长（像素）
+HELD_POS = (C.WINDOW_WIDTH - 160, C.WINDOW_HEIGHT - 160)   # 贴片左上角
+SWING_DURATION = 0.28                     # 挥动动画时长（秒）
+SWING_MAX_ANGLE = 42.0                    # 挥动最大角度（度）
+HAND_COLOR = (224, 188, 144)              # 程序化手的肤色（占位，可后续换贴图）
+HOTBAR_CELL = 54
+HOTBAR_GAP = 4
+HOTBAR_PAD = 6
+
+# 工具图标（res/images/items/）
+TOOL_ICON_FILES = ["copper_pickaxe.png", "sword_copper.png"]
+# 方块图标（与 PLACEABLE_BLOCKS 顺序一致）
+BLOCK_ICON_FILES = ["dirt.png", "stone.png", "wood.png", "sand.png", "snow.png", "grass.png"]
+
+
+def _load_icon_surface(fname, scale=4):
+    """从 res/images/items/ 加载图标，抠掉品红底，返回放大后的 SRCALPHA Surface。失败返回 None。"""
+    import os
+    path = os.path.join("res", "images", "items", fname)
+    try:
+        img = pygame.image.load(path).convert()
+        img.set_colorkey((255, 0, 255), pygame.RLEACCEL)
+        w, h = img.get_size()
+        big = pygame.transform.scale(img, (w * scale, h * scale))
+        out = pygame.Surface(big.get_size(), pygame.SRCALPHA)
+        out.blit(big, (0, 0))
+        return out
+    except Exception:
+        return None
+
+
+def _load_slime_cube_texture(path):
+    """从 MC 史莱姆展开图裁出一个 8×8 身体面，放大并强制不透明，作为方块六面贴图。"""
+    try:
+        img = pygame.image.load(path).convert_alpha()
+        face = pygame.Surface((8, 8), pygame.SRCALPHA)
+        face.blit(img, (0, 0), area=pygame.Rect(8, 8, 8, 8))   # 侧面面板之一
+        big = pygame.transform.scale(face, (32, 32))
+        return _surface_to_texture(big, flip=True, opaque=True)
+    except Exception:
+        return None
+
+
+def _build_hotbar_surface(font, inv_counts, sel_idx, tool_surfs):
+    """构建 8 格热栏 Surface：稿子/剑 + 6 方块（带数量/序号/选中高亮）。"""
+    n = HOTBAR_SLOTS
+    inner_w = HOTBAR_CELL * n + HOTBAR_GAP * (n - 1) + HOTBAR_PAD * 2
+    inner_h = HOTBAR_CELL + HOTBAR_PAD * 2
+    surf = pygame.Surface((inner_w, inner_h), pygame.SRCALPHA)
+    for i in range(n):
+        cx = HOTBAR_PAD + i * (HOTBAR_CELL + HOTBAR_GAP)
+        cy = HOTBAR_PAD
+        rect = pygame.Rect(cx, cy, HOTBAR_CELL, HOTBAR_CELL)
+        pygame.draw.rect(surf, (18, 18, 22, 210), rect)
+        if i < BLOCK_SLOT_BASE:
+            ic = tool_surfs[i]
+            if ic is not None:
+                surf.blit(ic, (cx + (HOTBAR_CELL - ic.get_width()) // 2,
+                               cy + (HOTBAR_CELL - ic.get_height()) // 2))
+            else:
+                col = [(180, 150, 90), (200, 200, 220)][i]
+                pygame.draw.rect(surf, col, rect.inflate(-12, -12))
+        else:
+            bi = i - BLOCK_SLOT_BASE
+            col = SLOT_COLORS[PLACEABLE_BLOCKS[bi]]
+            pygame.draw.rect(surf, col, rect.inflate(-8, -8))
+            cnt_txt = font.render(str(inv_counts[bi]), True, (255, 255, 255))
+            surf.blit(cnt_txt, (cx + HOTBAR_CELL - cnt_txt.get_width() - 4,
+                                cy + HOTBAR_CELL - cnt_txt.get_height() - 2))
+        num_txt = font.render(str(i + 1), True, (200, 200, 200))
+        surf.blit(num_txt, (cx + 3, cy + 2))
+        if i == sel_idx:
+            pygame.draw.rect(surf, (255, 255, 255), rect, 2)
+        else:
+            pygame.draw.rect(surf, (80, 80, 80), rect, 1)
+    return surf
+
+
 # ============================================================
 # 体素地形
 # ============================================================
@@ -441,6 +523,10 @@ def run_epilogue(font):
     except Exception:
         king_tex = None
 
+    # MC 风方块史莱姆（裁展开图一个身体面贴六面）
+    import os
+    slime_tex = _load_slime_cube_texture(os.path.join("3dres", "slime.png"))
+
     # 起始玩家位置：在世界中央偏东 6 格的地面上出生，看向中心的史莱姆王
     spawn_ix = int(W * 0.5 + 6)
     spawn_iz = int(W * 0.5)
@@ -459,9 +545,56 @@ def run_epilogue(font):
     quit_rect.centerx = int(C.WINDOW_WIDTH * 0.5)
     quit_rect.y = int(C.WINDOW_HEIGHT * 0.5 + 30)
 
+    # ---- 背包 + 手持物品 ----
+    inv_counts = [16, 16, 16, 16, 16, 16]   # 6 种可放置方块各给 16 个起步
+    # sel_idx: 0=稿子, 1=剑, 2-7=方块
+    swing_timer = 0.0                        # 挥动动画剩余秒数
+    # 热栏小图标（48px）+ 手持大图标（96px）
+    tool_hotbar = [_load_icon_surface(f, scale=3) for f in TOOL_ICON_FILES]
+    held_tool_tex = []
+    for f in TOOL_ICON_FILES:
+        s = _load_icon_surface(f, scale=6)
+        held_tool_tex.append(_surface_to_texture(s, flip=False) if s else None)
+    held_block_tex = []
+    for f in BLOCK_ICON_FILES:
+        s = _load_icon_surface(f, scale=6)
+        held_block_tex.append(_surface_to_texture(s, flip=False) if s else None)
+    hotbar_surf = _build_hotbar_surface(font, inv_counts, sel_idx, tool_hotbar)
+    hotbar_tex = _surface_to_texture(hotbar_surf, flip=False)
+    hotbar_size = hotbar_surf.get_size()
+
+    def _refresh_hotbar():
+        nonlocal hotbar_tex, hotbar_size
+        try:
+            glDeleteTextures([hotbar_tex])
+        except Exception:
+            pass
+        ns = _build_hotbar_surface(font, inv_counts, sel_idx, tool_hotbar)
+        hotbar_tex = _surface_to_texture(ns, flip=False)
+        hotbar_size = ns.get_size()
+
+    # ---- 史莱姆王攻击测试 ----
+    SLIME_SIZE = 2.0
+    king_ground_y = height[W // 2][W // 2]
+    king_center = (W * 0.5, king_ground_y + 1 + SLIME_SIZE * 0.5, W * 0.5)
+    king_max_hp = 100
+    king_hp = 100
+    king_alive = True
+    king_hurt = 0.0       # 受击闪红计时
+    king_respawn = 0.0    # 死亡后复活倒计时
+    king_parts = []       # 死亡粒子
+
+    # 眼睛/朝向初值（供事件处理命中判定，循环里每帧覆盖）
+    eye = (player_pos[0], player_pos[1] + EYE_HEIGHT, player_pos[2])
+    look_dir = (-math.sin(cam_yaw) * math.cos(cam_pitch),
+                -math.sin(cam_pitch),
+                -math.cos(cam_yaw) * math.cos(cam_pitch))
+    walk_phase = 0.0
+    moving = False
+
     # HUD 文字纹理
     hud_surf = font.render(
-        "3D - WASD | SPACE jump | LMB mine | RMB place | 1-6 block | SHIFT/WW sprint | ESC pause",
+        "3D - WASD | SPACE jump | LMB mine | RMB place | 1-2 tool / 3-8 block | SHIFT/WW sprint | ESC pause",
         True, (255, 255, 255))
     hud_tex = _surface_to_texture(hud_surf, flip=False)
     pause_surf = font.render(
@@ -501,8 +634,9 @@ def run_epilogue(font):
                         pygame.event.get()  # 清空旧事件，避免累积位移
                 elif event.key == pygame.K_q and paused:
                     running = False
-                elif pygame.K_1 <= event.key <= pygame.K_6 and not paused:
+                elif pygame.K_1 <= event.key <= pygame.K_8 and not paused:
                     sel_idx = event.key - pygame.K_1
+                    _refresh_hotbar()
                 elif event.key == pygame.K_w and not paused:
                     # 双击 W（300ms 内）触发疾跑
                     now = pygame.time.get_ticks()
@@ -523,23 +657,67 @@ def run_epilogue(font):
                         pygame.event.set_grab(True)
                         pygame.event.get()
                 else:
-                    # 游戏中：左键挖 / 右键放
-                    if event.button == 1 and target_block is not None:
-                        hx, hy, hz = target_block
-                        if 0 <= hx < W and 0 <= hz < W and 0 <= hy < MAX_H:
-                            solid[hx][hz][hy] = False
-                            tgrid[hx][hz][hy] = 0
-                            vert_count = _rebuild_vbo(solid, tgrid, slot_uv, vbo_id)
-                    elif event.button == 3 and place_block is not None:
-                        px_, py_, pz_ = place_block
-                        if 0 <= px_ < W and 0 <= pz_ < W and 0 <= py_ < MAX_H and not solid[px_][pz_][py_]:
-                            # 不能放在玩家身体里
-                            if not _voxel_overlaps_player(player_pos, px_, py_, pz_):
-                                solid[px_][pz_][py_] = True
-                                tgrid[px_][pz_][py_] = PLACEABLE_BLOCKS[sel_idx]
+                    # 游戏中：左键攻击/挖 / 右键放
+                    if event.button == 1:
+                        swing_timer = SWING_DURATION
+                        hit_king = False
+                        # 拿剑（槽 1）且瞄准史莱姆王 → 攻击
+                        if sel_idx == 1 and king_alive:
+                            kx = king_center[0] - eye[0]
+                            ky_ = king_center[1] - eye[1]
+                            kz = king_center[2] - eye[2]
+                            kdist = math.sqrt(kx * kx + ky_ * ky_ + kz * kz)
+                            if kdist < 7.5:
+                                cosang = (look_dir[0] * kx + look_dir[1] * ky_ + look_dir[2] * kz) / kdist
+                                if cosang > 0.93:
+                                    king_hp -= 25
+                                    king_hurt = 0.18
+                                    hit_king = True
+                                    try:
+                                        from assets import play_sound
+                                        play_sound("npc_hit", 0.5)
+                                    except Exception:
+                                        pass
+                                    if king_hp <= 0:
+                                        king_hp = 0
+                                        king_alive = False
+                                        king_respawn = 5.0
+                                        _spawn_king_particles(king_parts, king_center)
+                                        try:
+                                            from assets import play_sound
+                                            play_sound("npc_killed", 0.6)
+                                        except Exception:
+                                            pass
+                        # 没砍到王就尝试挖方块
+                        if not hit_king and target_block is not None:
+                            hx, hy, hz = target_block
+                            if 0 <= hx < W and 0 <= hz < W and 0 <= hy < MAX_H:
+                                mined = tgrid[hx][hz][hy]
+                                solid[hx][hz][hy] = False
+                                tgrid[hx][hz][hy] = 0
                                 vert_count = _rebuild_vbo(solid, tgrid, slot_uv, vbo_id)
+                                if mined in PLACEABLE_BLOCKS:
+                                    inv_counts[PLACEABLE_BLOCKS.index(mined)] += 1
+                                    _refresh_hotbar()
+                    elif event.button == 3 and target_block is not None and place_block is not None:
+                        # 必须瞄准实心方块才能放（杜绝悬空放置）
+                        if sel_idx >= BLOCK_SLOT_BASE:
+                            bi = sel_idx - BLOCK_SLOT_BASE
+                            if inv_counts[bi] > 0:
+                                px_, py_, pz_ = place_block
+                                if (0 <= px_ < W and 0 <= pz_ < W and 0 <= py_ < MAX_H
+                                        and not solid[px_][pz_][py_]):
+                                    if not _voxel_overlaps_player(player_pos, px_, py_, pz_):
+                                        solid[px_][pz_][py_] = True
+                                        tgrid[px_][pz_][py_] = PLACEABLE_BLOCKS[bi]
+                                        vert_count = _rebuild_vbo(solid, tgrid, slot_uv, vbo_id)
+                                        inv_counts[bi] -= 1
+                                        _refresh_hotbar()
+                                        swing_timer = SWING_DURATION
 
         if not paused:
+            if swing_timer > 0:
+                swing_timer = max(0.0, swing_timer - dt)
             # 鼠标视角
             dx, dy = pygame.mouse.get_rel()
             cam_yaw -= dx * LOOK_SENS * 0.01
@@ -596,6 +774,30 @@ def run_epilogue(font):
                         -math.sin(cam_pitch),
                         -math.cos(cam_yaw) * math.cos(cam_pitch))
             target_block, place_block = _raycast_block(solid, W, MAX_H, eye, look_dir)
+
+            # 走路摆动相位
+            if grounded and (abs(player_vel[0]) + abs(player_vel[2])) > 0.5:
+                walk_phase += dt * 10.0
+                moving = True
+            else:
+                moving = False
+
+            # 史莱姆王状态更新
+            if king_hurt > 0:
+                king_hurt = max(0.0, king_hurt - dt)
+            if not king_alive:
+                king_respawn -= dt
+                for p in king_parts:
+                    p['vy'] -= 18.0 * dt
+                    p['x'] += p['vx'] * dt
+                    p['y'] += p['vy'] * dt
+                    p['z'] += p['vz'] * dt
+                    p['life'] -= dt
+                king_parts = [p for p in king_parts if p['life'] > 0]
+                if king_respawn <= 0:
+                    king_alive = True
+                    king_hp = king_max_hp
+                    king_parts = []
         else:
             pygame.mouse.get_rel()  # 暂停时仍消费位移，避免恢复瞬间跳变
             target_block = None
@@ -629,18 +831,34 @@ def run_epilogue(font):
         if not paused:
             _draw_block_highlight(target_block)
 
-        # King Slime billboard（永远面向相机的圆柱公告板）
-        # 调 KING_LIFT 可整体上移史莱姆王（解决贴图底部空边导致的“沉地”错觉）
-        if king_tex is not None:
-            king_h = 4.5
-            ground_y = height[W // 2][W // 2]
-            _draw_billboard(king_tex,
-                            (W * 0.5, ground_y + king_h * 0.5 + KING_LIFT, W * 0.5),
-                            cam_pos, cam_yaw, king_h, king_size)
+        # MC 风方块史莱姆（六面同贴图的立方体）+ 血条
+        if king_alive and slime_tex is not None:
+            tint = (1.0, 0.45, 0.45) if king_hurt > 0 else (1.0, 1.0, 1.0)
+            _draw_textured_cube(slime_tex, king_center, SLIME_SIZE, tint)
+            if king_hp < king_max_hp:
+                bar_pos = (king_center[0], king_center[1] + SLIME_SIZE * 0.5 + 0.4, king_center[2])
+                _draw_billboard_hp_bar(bar_pos, cam_pos, king_hp / king_max_hp, 2.6)
+        if king_parts:
+            _draw_king_particles(king_parts, cam_pos)
+
+        # ---- 手持物品（世界空间 viewmodel：透视 + 走路摆动 + 挥动）----
+        if sel_idx == 0:
+            held_tex, is_hand = held_tool_tex[0], False
+        elif sel_idx == 1:
+            held_tex, is_hand = held_tool_tex[1], False
+        else:
+            bi = sel_idx - BLOCK_SLOT_BASE
+            if inv_counts[bi] > 0 and held_block_tex[bi]:
+                held_tex, is_hand = held_block_tex[bi], False
+            else:
+                held_tex, is_hand = None, True
+        swing_progress = 1.0 - swing_timer / SWING_DURATION if swing_timer > 0 else 0.0
+        if not paused and (held_tex is not None or is_hand):
+            _draw_viewmodel(held_tex, is_hand, swing_progress, walk_phase, moving)
 
         # ---- HUD（正交投影）----
-        sel_color = SLOT_COLORS[PLACEABLE_BLOCKS[sel_idx]]
-        _draw_hud(hud_tex, hud_surf.get_size(), sel_color, sel_idx,
+        _draw_hud(hud_tex, hud_surf.get_size(),
+                  hotbar_tex, hotbar_size,
                   pause_tex if paused else None, pause_surf.get_size(),
                   quit_rect if paused else None, quit_tex, quit_surf.get_size())
 
@@ -650,7 +868,11 @@ def run_epilogue(font):
     pygame.mouse.set_visible(True)
     pygame.event.set_grab(False)
     try:
-        glDeleteTextures([atlas_tex, hud_tex, pause_tex, quit_tex] + ([king_tex] if king_tex else []))
+        held_all = [t for t in held_tool_tex + held_block_tex if t is not None]
+        texs = [atlas_tex, hud_tex, pause_tex, quit_tex, hotbar_tex]
+        if slime_tex is not None:
+            texs.append(slime_tex)
+        glDeleteTextures(texs + ([king_tex] if king_tex else []) + held_all)
         glDeleteBuffers([vbo_id])
     except Exception:
         pass
@@ -711,10 +933,164 @@ def _draw_billboard(tex_id, world_pos, cam_pos, cam_yaw, height_world, tex_size)
     glDisable(GL_ALPHA_TEST)
 
 
-def _draw_hud(hud_tex, hud_size, sel_color, sel_idx,
+def _draw_cuboid(cx, cy, cz, sx, sy, sz, color):
+    """轴对齐实色长方体，各面不同亮度制造立体感（用于程序化手）。"""
+    x0, x1 = cx - sx * 0.5, cx + sx * 0.5
+    y0, y1 = cy - sy * 0.5, cy + sy * 0.5
+    z0, z1 = cz - sz * 0.5, cz + sz * 0.5
+    faces = [
+        ((x0, y0, z0), (x1, y0, z0), (x1, y1, z0), (x0, y1, z0), 0.75),  # -z
+        ((x1, y0, z1), (x0, y0, z1), (x0, y1, z1), (x1, y1, z1), 0.75),  # +z
+        ((x0, y1, z0), (x1, y1, z0), (x1, y1, z1), (x0, y1, z1), 1.00),  # +y top
+        ((x0, y0, z1), (x1, y0, z1), (x1, y0, z0), (x0, y0, z0), 0.55),  # -y bottom
+        ((x1, y0, z0), (x1, y0, z1), (x1, y1, z1), (x1, y1, z0), 0.88),  # +x
+        ((x0, y0, z1), (x0, y0, z0), (x0, y1, z0), (x0, y1, z1), 0.88),  # -x
+    ]
+    glDisable(GL_TEXTURE_2D)
+    for f in faces:
+        b = f[4]
+        glColor3f(color[0] / 255.0 * b, color[1] / 255.0 * b, color[2] / 255.0 * b)
+        glBegin(GL_QUADS)
+        for v in f[:4]:
+            glVertex3f(*v)
+        glEnd()
+    glEnable(GL_TEXTURE_2D)
+
+
+def _draw_textured_cube(tex, center, size, tint=(1.0, 1.0, 1.0)):
+    """六面同贴图的实心立方体（MC 风方块史莱姆用）。center=几何中心，size=边长。
+    复用 FACES 的法线/亮度做简单 shading；UV 按面方向取，保证贴图直立。"""
+    cx, cy, cz = center
+    glBindTexture(GL_TEXTURE_2D, tex)
+    for name, normal, bright, verts in FACES:
+        glColor3f(bright * tint[0], bright * tint[1], bright * tint[2])
+        glBegin(GL_QUADS)
+        for dx, dy, dz in verts:
+            nx, ny, nz = normal
+            if ny != 0:          # top/bottom：u=x, v=z
+                u, v = dx, dz
+            elif nx != 0:        # east/west：u=z, v=y
+                u, v = dz, dy
+            else:                # north/south：u=x, v=y
+                u, v = dx, dy
+            glTexCoord2f(u, v)
+            glVertex3f(cx + (dx - 0.5) * size, cy + (dy - 0.5) * size, cz + (dz - 0.5) * size)
+        glEnd()
+    glColor3f(1, 1, 1)
+
+
+def _draw_viewmodel(held_tex, is_hand, swing_progress, bob_phase, moving):
+    """世界渲染后以相机空间绘制手持物品（贴片/程序化手），带走路摆动 + 挥动。
+    先清深度缓冲保证手持物总在前，且保留透视感（比纯屏幕贴片更接近 MC 第一人称）。"""
+    glClear(GL_DEPTH_BUFFER_BIT)
+    glMatrixMode(GL_MODELVIEW)
+    glPushMatrix()
+    glLoadIdentity()                       # 相机空间：相机在原点看向 -Z
+    glEnable(GL_BLEND)
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+    glDisable(GL_ALPHA_TEST)
+    bob_y = math.sin(bob_phase) * 0.022 if moving else 0.0
+    bob_x = math.cos(bob_phase * 0.5) * 0.012 if moving else 0.0
+    swing = math.sin(swing_progress * math.pi) if swing_progress > 0 else 0.0
+    glTranslatef(0.40 + bob_x, -0.36 + bob_y, -0.85)
+    if is_hand:
+        # 程序化手：肤色长方体（小臂+拳），绕腕部俯仰挥动
+        glTranslatef(0.0, -0.18, 0.0)
+        glRotatef(-18.0 + swing * 60.0, 1, 0, 0)
+        glTranslatef(0.0, 0.18, 0.0)
+        _draw_cuboid(0.0, -0.05, 0.02, 0.12, 0.34, 0.12, HAND_COLOR)
+    else:
+        glTranslatef(0.0, -0.16, 0.0)
+        glRotatef(-12.0 + swing * 60.0, 1, 0, 0)
+        glTranslatef(0.0, 0.16, 0.0)
+        half = 0.20
+        glBindTexture(GL_TEXTURE_2D, held_tex)
+        glColor4f(1, 1, 1, 1)
+        glBegin(GL_QUADS)
+        glTexCoord2f(0, 0); glVertex3f(-half, half, 0)
+        glTexCoord2f(1, 0); glVertex3f(half, half, 0)
+        glTexCoord2f(1, 1); glVertex3f(half, -half, 0)
+        glTexCoord2f(0, 1); glVertex3f(-half, -half, 0)
+        glEnd()
+    glDisable(GL_BLEND)
+    glColor3f(1, 1, 1)
+    glPopMatrix()
+
+
+def _spawn_king_particles(parts, center, count=22, color=(60, 130, 230)):
+    for _ in range(count):
+        ang = random.random() * math.pi * 2
+        spd = random.random() * 3.5 + 1.5
+        parts.append({
+            'x': center[0] + (random.random() - 0.5) * 1.6,
+            'y': center[1] + (random.random() - 0.5) * 2.2,
+            'z': center[2] + (random.random() - 0.5) * 1.6,
+            'vx': math.cos(ang) * spd,
+            'vy': random.random() * 4.0 + 1.0,
+            'vz': math.sin(ang) * spd,
+            'life': 0.5 + random.random() * 0.5,
+            'size': 0.12 + random.random() * 0.12,
+            'color': color,
+        })
+
+
+def _draw_king_particles(parts, cam_pos):
+    if not parts:
+        return
+    glDisable(GL_TEXTURE_2D)
+    for p in parts:
+        dx = cam_pos[0] - p['x']; dz = cam_pos[2] - p['z']
+        L = math.sqrt(dx * dx + dz * dz) or 1.0
+        rx, rz = -dz / L, dx / L
+        s = p['size']
+        c = p['color']
+        glColor3f(c[0] / 255.0, c[1] / 255.0, c[2] / 255.0)
+        glBegin(GL_QUADS)
+        glVertex3f(p['x'] - rx * s, p['y'] - s, p['z'] - rz * s)
+        glVertex3f(p['x'] + rx * s, p['y'] - s, p['z'] + rz * s)
+        glVertex3f(p['x'] + rx * s, p['y'] + s, p['z'] + rz * s)
+        glVertex3f(p['x'] - rx * s, p['y'] + s, p['z'] - rz * s)
+        glEnd()
+    glColor3f(1, 1, 1)
+    glEnable(GL_TEXTURE_2D)
+
+
+def _draw_billboard_hp_bar(world_pos, cam_pos, ratio, width_world, height_world=0.16):
+    """在 world_pos 处画一个面向相机的血条（暗背景 + 左对齐前景）。"""
+    dx = cam_pos[0] - world_pos[0]; dz = cam_pos[2] - world_pos[2]
+    L = math.sqrt(dx * dx + dz * dz) or 1.0
+    rx, rz = -dz / L, dx / L
+    hw = width_world * 0.5
+    hh = height_world * 0.5
+    cx, cy, cz = world_pos
+    glDisable(GL_TEXTURE_2D)
+    glColor3f(0.12, 0.12, 0.12)
+    glBegin(GL_QUADS)
+    glVertex3f(cx - rx * hw, cy - hh, cz - rz * hw)
+    glVertex3f(cx + rx * hw, cy - hh, cz + rz * hw)
+    glVertex3f(cx + rx * hw, cy + hh, cz + rz * hw)
+    glVertex3f(cx - rx * hw, cy + hh, cz - rz * hw)
+    glEnd()
+    r = max(0.0, min(1.0, ratio))
+    fill_hw = hw * r
+    off = hw - fill_hw
+    cx2 = cx - rx * off; cz2 = cz - rz * off
+    glColor3f(1 - r, r, 0.0)
+    glBegin(GL_QUADS)
+    glVertex3f(cx2 - rx * fill_hw, cy - hh + 0.03, cz2 - rz * fill_hw)
+    glVertex3f(cx2 + rx * fill_hw, cy - hh + 0.03, cz2 + rz * fill_hw)
+    glVertex3f(cx2 + rx * fill_hw, cy + hh - 0.03, cz2 + rz * fill_hw)
+    glVertex3f(cx2 - rx * fill_hw, cy + hh - 0.03, cz2 - rz * fill_hw)
+    glEnd()
+    glColor3f(1, 1, 1)
+    glEnable(GL_TEXTURE_2D)
+
+
+def _draw_hud(hud_tex, hud_size,
+              hotbar_tex, hotbar_size,
               pause_tex=None, pause_size=(0, 0),
               quit_rect=None, quit_tex=None, quit_size=(0, 0)):
-    """切换到正交投影画准星 + 文字 + 选中方块指示（+ 暂停时画提示和 QUIT 按钮），然后切回"""
+    """正交投影：准星 + 顶部文字 + 热栏 + 暂停时画提示和 QUIT。"""
     glMatrixMode(GL_PROJECTION)
     glPushMatrix()
     glLoadIdentity()
@@ -732,13 +1108,14 @@ def _draw_hud(hud_tex, hud_size, sel_color, sel_idx,
     glVertex2f(cx, cy - 8); glVertex2f(cx, cy + 8)
     glEnd()
 
-    # 文字 / 按钮（都带透明背景，必须开 blend）
+    # 文字 / 贴片都带透明背景，必须开 blend
     glEnable(GL_BLEND)
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
 
+    # 顶部说明文字
     hw, hh = hud_size
     glBindTexture(GL_TEXTURE_2D, hud_tex)
-    glColor3f(1, 1, 1)
+    glColor4f(1, 1, 1, 1)
     glBegin(GL_QUADS)
     glTexCoord2f(0, 0); glVertex2f(12, 12)
     glTexCoord2f(1, 0); glVertex2f(12 + hw, 12)
@@ -746,25 +1123,26 @@ def _draw_hud(hud_tex, hud_size, sel_color, sel_idx,
     glTexCoord2f(0, 1); glVertex2f(12, 12 + hh)
     glEnd()
 
-    if pause_tex is None:
-        # 选中方块色块（左上，文字下方）
-        glDisable(GL_TEXTURE_2D)
-        col = sel_color
-        bx, by = 14, 14 + hh + 6
-        glColor3f(col[0] / 255.0, col[1] / 255.0, col[2] / 255.0)
-        glBegin(GL_QUADS)
-        glVertex2f(bx, by); glVertex2f(bx + 20, by)
-        glVertex2f(bx + 20, by + 20); glVertex2f(bx, by + 20)
-        glEnd()
-        glColor3f(1, 1, 1)
-        glEnable(GL_TEXTURE_2D)
-    else:
-        # 暂停提示（居中）
+    # 热栏（底部居中）
+    bw, bh = hotbar_size
+    bx = (C.WINDOW_WIDTH - bw) * 0.5
+    by = C.WINDOW_HEIGHT - bh - 14
+    glBindTexture(GL_TEXTURE_2D, hotbar_tex)
+    glColor4f(1, 1, 1, 1)
+    glBegin(GL_QUADS)
+    glTexCoord2f(0, 0); glVertex2f(bx, by)
+    glTexCoord2f(1, 0); glVertex2f(bx + bw, by)
+    glTexCoord2f(1, 1); glVertex2f(bx + bw, by + bh)
+    glTexCoord2f(0, 1); glVertex2f(bx, by + bh)
+    glEnd()
+
+    # 暂停提示 + QUIT 按钮
+    if pause_tex is not None:
         pw, ph = pause_size
         bx = (C.WINDOW_WIDTH - pw) * 0.5
         by = (C.WINDOW_HEIGHT - ph) * 0.5
         glBindTexture(GL_TEXTURE_2D, pause_tex)
-        glColor3f(1, 1, 1)
+        glColor4f(1, 1, 1, 1)
         glBegin(GL_QUADS)
         glTexCoord2f(0, 0); glVertex2f(bx, by)
         glTexCoord2f(1, 0); glVertex2f(bx + pw, by)
@@ -772,7 +1150,6 @@ def _draw_hud(hud_tex, hud_size, sel_color, sel_idx,
         glTexCoord2f(0, 1); glVertex2f(bx, by + ph)
         glEnd()
 
-        # QUIT 按钮
         if quit_rect is not None and quit_tex is not None:
             qw, qh = quit_size
             glDisable(GL_TEXTURE_2D)
@@ -792,7 +1169,7 @@ def _draw_hud(hud_tex, hud_size, sel_color, sel_idx,
             glEnd()
             glEnable(GL_TEXTURE_2D)
             glBindTexture(GL_TEXTURE_2D, quit_tex)
-            glColor3f(1, 1, 1)
+            glColor4f(1, 1, 1, 1)
             tx = quit_rect.centerx - qw * 0.5
             ty = quit_rect.centery - qh * 0.5
             glBegin(GL_QUADS)
