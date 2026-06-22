@@ -154,16 +154,34 @@ def _load_icon_surface(fname, scale=4):
         return None
 
 
-def _load_slime_cube_texture(path):
-    """从 MC 史莱姆展开图裁出一个 8×8 身体面，放大并强制不透明，作为方块六面贴图。"""
+def _load_slime_body_texture(path):
+    """从 MC 史莱姆展开图裁出 8×8 身体面（无眼睛），放大并强制不透明，用于立方体顶/底。"""
     try:
         img = pygame.image.load(path).convert_alpha()
         face = pygame.Surface((8, 8), pygame.SRCALPHA)
-        face.blit(img, (0, 0), area=pygame.Rect(8, 8, 8, 8))   # 侧面面板之一
+        face.blit(img, (0, 0), area=pygame.Rect(8, 8, 8, 8))   # 身体面板（无眼睛）
         big = pygame.transform.scale(face, (32, 32))
         return _surface_to_texture(big, flip=True, opaque=True)
     except Exception:
         return None
+
+
+def _load_slime_face_texture(path):
+    """直接加载预制作好的「正面贴图」（用户提供的 3dres/slime_face.png，
+    32×32 已含绿色身体 + 黑色眼睛，无透明背景）。用于立方体单个侧面。"""
+    try:
+        img = pygame.image.load(path).convert_alpha()
+        return _surface_to_texture(img, flip=True, opaque=True)
+    except Exception:
+        return None
+
+
+# 史莱姆跳跃参数（3D 场景专用——比 2D 慢得多，避免太敏捷）
+SLIME_GRAVITY_3D = 18.0      # 下落加速度（比玩家的 28 慢，更"漂浮"）
+SLIME_JUMP_VY = 7.5          # 起跳向上速度（约能跳 ~1.5 格高）
+SLIME_HSPEED = 4.0           # 跳跃时水平速度（块/秒，2D 是 14，3D 慢得多）
+SLIME_JUMP_INTERVAL = 1.0    # 落地到下次起跳的最小间隔（秒）
+SLIME_JUMP_JITTER = 0.5      # 间隔随机抖动范围（秒）
 
 
 def _build_hotbar_surface(font, inv_counts, sel_idx, tool_surfs):
@@ -523,9 +541,10 @@ def run_epilogue(font):
     except Exception:
         king_tex = None
 
-    # MC 风方块史莱姆（裁展开图一个身体面贴六面）
+    # MC 风方块史莱姆：身体贴图（顶/底 + 3 个侧面）+ 正面贴图（用户提供的 slime_face.png）
     import os
-    slime_tex = _load_slime_cube_texture(os.path.join("3dres", "slime.png"))
+    slime_tex = _load_slime_body_texture(os.path.join("3dres", "slime.png"))
+    slime_face_tex = _load_slime_face_texture(os.path.join("3dres", "slime_face.png"))
 
     # 起始玩家位置：在世界中央偏东 6 格的地面上出生，看向中心的史莱姆王
     spawn_ix = int(W * 0.5 + 6)
@@ -573,10 +592,14 @@ def run_epilogue(font):
         hotbar_tex = _surface_to_texture(ns, flip=False)
         hotbar_size = ns.get_size()
 
-    # ---- 史莱姆王攻击测试 ----
+    # ---- 史莱姆王攻击测试（动态：会跳跃追玩家）----
     SLIME_SIZE = 2.0
     king_ground_y = height[W // 2][W // 2]
-    king_center = (W * 0.5, king_ground_y + 1 + SLIME_SIZE * 0.5, W * 0.5)
+    # 用 list 而不是 tuple，方便每帧更新位置；中心 y = 地面 + 1 + 半个身高
+    slime_pos = [W * 0.5, king_ground_y + 1 + SLIME_SIZE * 0.5, W * 0.5]
+    slime_vel = [0.0, 0.0, 0.0]
+    slime_grounded = True
+    slime_jump_timer = 1.2     # 第一次起跳前的等待（秒）
     king_max_hp = 100
     king_hp = 100
     king_alive = True
@@ -663,9 +686,9 @@ def run_epilogue(font):
                         hit_king = False
                         # 拿剑（槽 1）且瞄准史莱姆王 → 攻击
                         if sel_idx == 1 and king_alive:
-                            kx = king_center[0] - eye[0]
-                            ky_ = king_center[1] - eye[1]
-                            kz = king_center[2] - eye[2]
+                            kx = slime_pos[0] - eye[0]
+                            ky_ = slime_pos[1] - eye[1]
+                            kz = slime_pos[2] - eye[2]
                             kdist = math.sqrt(kx * kx + ky_ * ky_ + kz * kz)
                             if kdist < 7.5:
                                 cosang = (look_dir[0] * kx + look_dir[1] * ky_ + look_dir[2] * kz) / kdist
@@ -682,7 +705,7 @@ def run_epilogue(font):
                                         king_hp = 0
                                         king_alive = False
                                         king_respawn = 5.0
-                                        _spawn_king_particles(king_parts, king_center)
+                                        _spawn_king_particles(king_parts, tuple(slime_pos))
                                         try:
                                             from assets import play_sound
                                             play_sound("npc_killed", 0.6)
@@ -798,6 +821,50 @@ def run_epilogue(font):
                     king_alive = True
                     king_hp = king_max_hp
                     king_parts = []
+                    # 复活时重置位置到世界中央地面，速度归零
+                    slime_pos = [W * 0.5, king_ground_y + 1 + SLIME_SIZE * 0.5, W * 0.5]
+                    slime_vel = [0.0, 0.0, 0.0]
+                    slime_grounded = True
+                    slime_jump_timer = 1.0
+            else:
+                # 史莱姆跳跃 AI：站定时倒计时，到点就朝玩家方向跳；空中受重力
+                if slime_grounded:
+                    slime_vel[0] = 0.0
+                    slime_vel[2] = 0.0
+                    slime_jump_timer -= dt
+                    if slime_jump_timer <= 0:
+                        import random as _rng
+                        slime_jump_timer = SLIME_JUMP_INTERVAL + _rng.random() * SLIME_JUMP_JITTER
+                        # 水平方向：朝玩家走单位向量 × 慢速
+                        dx = player_pos[0] - slime_pos[0]
+                        dz = player_pos[2] - slime_pos[2]
+                        L = math.sqrt(dx * dx + dz * dz) + 1e-6
+                        slime_vel[0] = (dx / L) * SLIME_HSPEED
+                        slime_vel[2] = (dz / L) * SLIME_HSPEED
+                        slime_vel[1] = SLIME_JUMP_VY
+                        slime_grounded = False
+                else:
+                    slime_vel[1] -= SLIME_GRAVITY_3D * dt
+
+                # 位置积分
+                slime_pos[0] += slime_vel[0] * dt
+                slime_pos[1] += slime_vel[1] * dt
+                slime_pos[2] += slime_vel[2] * dt
+
+                # 落地检测：查 slime 当前 (x,z) 下的地表高度
+                sx_i = int(slime_pos[0])
+                sz_i = int(slime_pos[2])
+                if 0 <= sx_i < W and 0 <= sz_i < W:
+                    ground_top = height[sx_i][sz_i] + 1   # 顶块上方
+                else:
+                    ground_top = 0
+                floor_y = ground_top + SLIME_SIZE * 0.5
+                if slime_pos[1] <= floor_y:
+                    slime_pos[1] = floor_y
+                    slime_vel[1] = 0.0
+                    slime_vel[0] = 0.0
+                    slime_vel[2] = 0.0
+                    slime_grounded = True
         else:
             pygame.mouse.get_rel()  # 暂停时仍消费位移，避免恢复瞬间跳变
             target_block = None
@@ -831,12 +898,14 @@ def run_epilogue(font):
         if not paused:
             _draw_block_highlight(target_block)
 
-        # MC 风方块史莱姆（六面同贴图的立方体）+ 血条
+        # MC 风方块史莱姆：5 面身体贴图 + 南面用 slime_face.png；固定朝向不跟踪玩家
         if king_alive and slime_tex is not None:
             tint = (1.0, 0.45, 0.45) if king_hurt > 0 else (1.0, 1.0, 1.0)
-            _draw_textured_cube(slime_tex, king_center, SLIME_SIZE, tint)
+            slime_center = tuple(slime_pos)
+            _draw_textured_cube(slime_tex, slime_center, SLIME_SIZE, tint,
+                                side_tex=slime_face_tex)
             if king_hp < king_max_hp:
-                bar_pos = (king_center[0], king_center[1] + SLIME_SIZE * 0.5 + 0.4, king_center[2])
+                bar_pos = (slime_center[0], slime_center[1] + SLIME_SIZE * 0.5 + 0.4, slime_center[2])
                 _draw_billboard_hp_bar(bar_pos, cam_pos, king_hp / king_max_hp, 2.6)
         if king_parts:
             _draw_king_particles(king_parts, cam_pos)
@@ -872,6 +941,8 @@ def run_epilogue(font):
         texs = [atlas_tex, hud_tex, pause_tex, quit_tex, hotbar_tex]
         if slime_tex is not None:
             texs.append(slime_tex)
+        if slime_face_tex is not None:
+            texs.append(slime_face_tex)
         glDeleteTextures(texs + ([king_tex] if king_tex else []) + held_all)
         glDeleteBuffers([vbo_id])
     except Exception:
@@ -957,16 +1028,28 @@ def _draw_cuboid(cx, cy, cz, sx, sy, sz, color):
     glEnable(GL_TEXTURE_2D)
 
 
-def _draw_textured_cube(tex, center, size, tint=(1.0, 1.0, 1.0)):
-    """六面同贴图的实心立方体（MC 风方块史莱姆用）。center=几何中心，size=边长。
-    复用 FACES 的法线/亮度做简单 shading；UV 按面方向取，保证贴图直立。"""
+def _draw_textured_cube(tex, center, size, tint=(1.0, 1.0, 1.0), side_tex=None, face_yaw=None):
+    """六面贴图立方体（MC 风方块史莱姆用）。center=几何中心，size=边长。
+    side_tex 可选：若提供，则"南面"(z=+1)用 side_tex（带眼睛的正面），
+    其余 5 面用 tex（身体贴图，跟之前六面同图一样）。
+    face_yaw 可选（弧度）：绕 Y 轴旋转整个立方体——传 slime→玩家方向角，
+    可以让"脸"始终对着玩家。"""
     cx, cy, cz = center
-    glBindTexture(GL_TEXTURE_2D, tex)
+    if face_yaw is not None:
+        glPushMatrix()
+        glTranslatef(cx, cy, cz)
+        glRotatef(math.degrees(face_yaw), 0, 1, 0)
+        glTranslatef(-cx, -cy, -cz)
     for name, normal, bright, verts in FACES:
+        nx, ny, nz = normal
+        # 只有南面（z=+1）用 side_tex，其余都用 tex（"再之前那个版本"的样子）
+        if side_tex is not None and name == "south":
+            glBindTexture(GL_TEXTURE_2D, side_tex)
+        else:
+            glBindTexture(GL_TEXTURE_2D, tex)
         glColor3f(bright * tint[0], bright * tint[1], bright * tint[2])
         glBegin(GL_QUADS)
         for dx, dy, dz in verts:
-            nx, ny, nz = normal
             if ny != 0:          # top/bottom：u=x, v=z
                 u, v = dx, dz
             elif nx != 0:        # east/west：u=z, v=y
@@ -977,6 +1060,8 @@ def _draw_textured_cube(tex, center, size, tint=(1.0, 1.0, 1.0)):
             glVertex3f(cx + (dx - 0.5) * size, cy + (dy - 0.5) * size, cz + (dz - 0.5) * size)
         glEnd()
     glColor3f(1, 1, 1)
+    if face_yaw is not None:
+        glPopMatrix()
 
 
 def _draw_viewmodel(held_tex, is_hand, swing_progress, bob_phase, moving):
