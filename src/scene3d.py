@@ -33,9 +33,10 @@ ATLAS_SIZE = ATLAS_COLS * ATLAS_CELL  # 64
 
 # ---- 挖/放 ----
 REACH_3D = 6.0           # 挖/放 reach（方块数）
-# 数字键 1-6 选择的可放置方块
-PLACEABLE_BLOCKS = [SLOT_DIRT, SLOT_STONE, SLOT_WOOD, SLOT_SAND, SLOT_SNOW, SLOT_GRASS]
-PLACEABLE_NAMES = ["Dirt", "Stone", "Wood", "Sand", "Snow", "Grass"]
+# 数字键 1-8 选择的可放置方块（前 6 个是普通地形，后 2 个铜/银矿石是"贵重"物品）
+PLACEABLE_BLOCKS = [SLOT_DIRT, SLOT_STONE, SLOT_WOOD, SLOT_SAND, SLOT_SNOW, SLOT_GRASS,
+                    SLOT_COPPER, SLOT_SILVER]
+PLACEABLE_NAMES = ["Dirt", "Stone", "Wood", "Sand", "Snow", "Grass", "Copper", "Silver"]
 SLOT_COLORS = {
     SLOT_GRASS: (90, 160, 40), SLOT_DIRT: (139, 90, 43), SLOT_STONE: (128, 128, 128),
     SLOT_WOOD: (181, 137, 72), SLOT_LEAVES: (34, 120, 15), SLOT_SAND: (220, 200, 150),
@@ -284,6 +285,56 @@ def _surface_to_texture(surface, flip=True, opaque=False):
     return tex
 
 
+# 正交投影叠加层用：缓存文本→纹理，避免每帧 glTexImage2D/glDeleteTextures
+# 键: (text, color)；值: (tex_id, (w, h))
+_text_cache = {}
+
+
+def _cached_text_texture(font, text, color):
+    key = (text, tuple(color))
+    ent = _text_cache.get(key)
+    if ent is None:
+        surf = font.render(text, True, color)
+        tex = _surface_to_texture(surf, flip=False)
+        ent = (tex, surf.get_size())
+        _text_cache[key] = ent
+    return ent
+
+
+def _blit_textured_quad(tex, x, y, w, h):
+    """画一个对齐屏幕坐标的贴图四边形（调用方需已启用 TEXTURE_2D + 正交投影）。"""
+    glBindTexture(GL_TEXTURE_2D, tex)
+    glColor4f(1, 1, 1, 1)
+    glBegin(GL_QUADS)
+    glTexCoord2f(0, 0); glVertex2f(x, y)
+    glTexCoord2f(1, 0); glVertex2f(x + w, y)
+    glTexCoord2f(1, 1); glVertex2f(x + w, y + h)
+    glTexCoord2f(0, 1); glVertex2f(x, y + h)
+    glEnd()
+
+
+def _blit_text(font, text, x, y, color=(255, 230, 80)):
+    """渲染文本（带纹理缓存）到正交屏幕。返回 (w, h)。"""
+    tex, (tw, th) = _cached_text_texture(font, text, color)
+    _blit_textured_quad(tex, x, y, tw, th)
+    return tw, th
+
+
+def _draw_drag_icon(inv_drag, held_block_tex, font):
+    """拖拽中的物品：方块大图贴鼠标，右下角数量。复用文本缓存避免每帧分配。"""
+    if inv_drag is None:
+        return
+    bi = inv_drag["block_idx"]
+    mx, my = pygame.mouse.get_pos()
+    tex = held_block_tex[bi] if bi < len(held_block_tex) else None
+    cs = 48
+    if tex is not None:
+        _blit_textured_quad(tex, mx - cs // 2, my - cs // 2, cs, cs)
+    cnt_str = str(inv_drag["count"])
+    cw, chh = font.size(cnt_str)
+    _blit_text(font, cnt_str, mx + cs // 2 - cw - 2, my + cs // 2 - chh - 2, (255, 255, 255))
+
+
 # ---- 手持物品 / 热栏 ----
 # 热栏布局：槽 0=稿子，槽 1=剑，槽 2-7=方块（对应 PLACEABLE_BLOCKS）
 HOTBAR_SLOTS = 8
@@ -307,10 +358,17 @@ INV_GRID_W = INV_COLS * INV_CELL + (INV_COLS - 1) * INV_GAP + INV_PAD * 2   # 39
 INV_GRID_H = INV_ROWS * INV_CELL + (INV_ROWS - 1) * INV_GAP + INV_PAD * 2   # 204
 INV_STACK_MAX = 99
 
+# ---- 箱子（右键交互）----
+CHEST_COLS = 5
+CHEST_ROWS = 3                                     # 5×3 = 15 格
+CHEST_W = CHEST_COLS * INV_CELL + (CHEST_COLS - 1) * INV_GAP + INV_PAD * 2
+CHEST_H = CHEST_ROWS * INV_CELL + (CHEST_ROWS - 1) * INV_GAP + INV_PAD * 2
+
 # 工具图标（res/images/items/）
 TOOL_ICON_FILES = ["copper_pickaxe.png", "sword_copper.png"]
 # 方块图标（与 PLACEABLE_BLOCKS 顺序一致）
-BLOCK_ICON_FILES = ["dirt.png", "stone.png", "wood.png", "sand.png", "snow.png", "grass.png"]
+BLOCK_ICON_FILES = ["dirt.png", "stone.png", "wood.png", "sand.png", "snow.png", "grass.png",
+                    "copper.png", "silver.png"]
 
 
 def _load_icon_surface(fname, scale=4):
@@ -364,8 +422,10 @@ SLIME_LAG_TIME = 0.5         # 滞后时间常数（秒）——越大反应越�
 SLIME_TURN_SPEED = 8.0       # 朝向插值速度（弧度/秒，滞后记忆变化已慢，转得快点没问题）
 
 
-def _build_hotbar_surface(font, inv_counts, sel_idx, tool_surfs):
-    """构建 8 格热栏 Surface：稿子/剑 + 6 方块（带数量/序号/选中高亮）。"""
+def _build_hotbar_surface(font, hotbar, sel_idx, tool_surfs, block_surfs):
+    """构建 8 格热栏 Surface：稿子/剑 + 6 自由方块槽。
+    hotbar: 长度 8 的列表，前 2 项是工具占位（None），后 6 项为 None 或 {"block_idx","count"}。
+    block_surfs: 6 个方块的 pygame.Surface（与 PLACEABLE_BLOCKS 顺序一致），用于在槽里画真实图标。"""
     n = HOTBAR_SLOTS
     inner_w = HOTBAR_CELL * n + HOTBAR_GAP * (n - 1) + HOTBAR_PAD * 2
     inner_h = HOTBAR_CELL + HOTBAR_PAD * 2
@@ -376,6 +436,7 @@ def _build_hotbar_surface(font, inv_counts, sel_idx, tool_surfs):
         rect = pygame.Rect(cx, cy, HOTBAR_CELL, HOTBAR_CELL)
         pygame.draw.rect(surf, (18, 18, 22, 210), rect)
         if i < BLOCK_SLOT_BASE:
+            # 工具槽：稿子/剑
             ic = tool_surfs[i]
             if ic is not None:
                 surf.blit(ic, (cx + (HOTBAR_CELL - ic.get_width()) // 2,
@@ -384,12 +445,20 @@ def _build_hotbar_surface(font, inv_counts, sel_idx, tool_surfs):
                 col = [(180, 150, 90), (200, 200, 220)][i]
                 pygame.draw.rect(surf, col, rect.inflate(-12, -12))
         else:
-            bi = i - BLOCK_SLOT_BASE
-            col = SLOT_COLORS[PLACEABLE_BLOCKS[bi]]
-            pygame.draw.rect(surf, col, rect.inflate(-8, -8))
-            cnt_txt = font.render(str(inv_counts[bi]), True, (255, 255, 255))
-            surf.blit(cnt_txt, (cx + HOTBAR_CELL - cnt_txt.get_width() - 4,
-                                cy + HOTBAR_CELL - cnt_txt.get_height() - 2))
+            # 方块槽：读 hotbar[i]，空槽不画图标；非空画真实图标 + 数量
+            stack = hotbar[i]
+            if stack is not None:
+                bi = stack["block_idx"]
+                ic = block_surfs[bi] if 0 <= bi < len(block_surfs) else None
+                if ic is not None:
+                    surf.blit(ic, (cx + (HOTBAR_CELL - ic.get_width()) // 2,
+                                   cy + (HOTBAR_CELL - ic.get_height()) // 2))
+                else:
+                    col = SLOT_COLORS[PLACEABLE_BLOCKS[bi]]
+                    pygame.draw.rect(surf, col, rect.inflate(-8, -8))
+                cnt_txt = font.render(str(stack["count"]), True, (255, 255, 255))
+                surf.blit(cnt_txt, (cx + HOTBAR_CELL - cnt_txt.get_width() - 4,
+                                    cy + HOTBAR_CELL - cnt_txt.get_height() - 2))
         num_txt = font.render(str(i + 1), True, (200, 200, 200))
         surf.blit(num_txt, (cx + 3, cy + 2))
         if i == sel_idx:
@@ -399,19 +468,24 @@ def _build_hotbar_surface(font, inv_counts, sel_idx, tool_surfs):
     return surf
 
 
-def _build_inventory_surface(font, inv_grid):
-    """构建背包网格 Surface：8×4 格，每格画方块色块 + 数量（空格只画底色）。"""
-    surf = pygame.Surface((INV_GRID_W, INV_GRID_H), pygame.SRCALPHA)
-    pygame.draw.rect(surf, (10, 10, 14, 235), surf.get_rect(), border_radius=6)
-    for row in range(INV_ROWS):
-        for col in range(INV_COLS):
+def _build_grid_surface(font, grid, cols, rows, w, h,
+                        bg_color, border_color, cell_bg, cell_border):
+    """通用网格 Surface 构建（背包/箱子共用）。
+    bg_color=整体底色；border_color=None 不画外框，否则画 2px 外框；
+    cell_bg/cell_border 是每格的底色与描边色。"""
+    surf = pygame.Surface((w, h), pygame.SRCALPHA)
+    pygame.draw.rect(surf, bg_color, surf.get_rect(), border_radius=6)
+    if border_color is not None:
+        pygame.draw.rect(surf, border_color, surf.get_rect(), 2, border_radius=6)
+    for row in range(rows):
+        for col in range(cols):
             cx = INV_PAD + col * (INV_CELL + INV_GAP)
             cy = INV_PAD + row * (INV_CELL + INV_GAP)
             rect = pygame.Rect(cx, cy, INV_CELL, INV_CELL)
-            pygame.draw.rect(surf, (28, 28, 34, 230), rect)
-            pygame.draw.rect(surf, (70, 70, 80), rect, 1)
-            idx = row * INV_COLS + col
-            stack = inv_grid[idx]
+            pygame.draw.rect(surf, cell_bg, rect)
+            pygame.draw.rect(surf, cell_border, rect, 1)
+            idx = row * cols + col
+            stack = grid[idx]
             if stack:
                 bi = stack["block_idx"]
                 col_rgb = SLOT_COLORS[PLACEABLE_BLOCKS[bi]]
@@ -420,6 +494,47 @@ def _build_inventory_surface(font, inv_grid):
                 surf.blit(cnt_txt, (cx + INV_CELL - cnt_txt.get_width() - 4,
                                     cy + INV_CELL - cnt_txt.get_height() - 2))
     return surf
+
+
+def _build_inventory_surface(font, inv_grid):
+    return _build_grid_surface(font, inv_grid, INV_COLS, INV_ROWS, INV_GRID_W, INV_GRID_H,
+                               (10, 10, 14, 235), None, (28, 28, 34, 230), (70, 70, 80))
+
+
+def _build_chest_surface(font, chest_inv):
+    return _build_grid_surface(font, chest_inv, CHEST_COLS, CHEST_ROWS, CHEST_W, CHEST_H,
+                               (60, 38, 22, 240), (110, 75, 40), (40, 28, 18, 230), (90, 60, 30))
+
+
+# 箱子 loot 用的 block_idx（PLACEABLE_BLOCKS 里的下标）——名字比魔法数字直观
+_BI_COPPER = PLACEABLE_BLOCKS.index(SLOT_COPPER)
+_BI_SILVER = PLACEABLE_BLOCKS.index(SLOT_SILVER)
+_BI_WOOD = PLACEABLE_BLOCKS.index(SLOT_WOOD)
+_BI_STONE = PLACEABLE_BLOCKS.index(SLOT_STONE)
+_BI_SAND = PLACEABLE_BLOCKS.index(SLOT_SAND)
+_BI_SNOW = PLACEABLE_BLOCKS.index(SLOT_SNOW)
+
+
+def _make_chest_inventory(cx, cz):
+    """根据坐标 seed 生成箱子 loot：固定有铜矿/银矿/木头，可能额外有石头/沙子等。"""
+    rng = random.Random((cx * 73856093) ^ (cz * 19349663))
+    inv = [None] * (CHEST_COLS * CHEST_ROWS)
+    inv[0] = {"block_idx": _BI_COPPER, "count": rng.randint(15, 40)}
+    inv[1] = {"block_idx": _BI_SILVER, "count": rng.randint(8, 25)}
+    inv[2] = {"block_idx": _BI_WOOD, "count": rng.randint(10, 30)}
+    # 随机额外的槽位（建材或更多矿石）
+    extra_choices = [
+        (_BI_STONE, 20, 50),
+        (_BI_SAND, 10, 30),
+        (_BI_SNOW, 10, 25),
+        (_BI_COPPER, 5, 15),
+        (_BI_SILVER, 3, 10),
+    ]
+    for slot in range(3, CHEST_COLS * CHEST_ROWS):
+        if rng.random() < 0.35:
+            bi, lo, hi = rng.choice(extra_choices)
+            inv[slot] = {"block_idx": bi, "count": rng.randint(lo, hi)}
+    return inv
 
 
 def _inventory_grid_origin():
@@ -435,8 +550,43 @@ def _hotbar_origin(hotbar_size):
     return (C.WINDOW_WIDTH - bw) // 2, C.WINDOW_HEIGHT - bh - 14
 
 
-def _slot_at_pos(pos, hotbar_size, inv_origin):
-    """命中检测：返回 (区域, 索引) 或 None。区域："hotbar" 0..7 / "grid" 0..31。"""
+def _chest_grid_origin():
+    """箱子网格左上角（顶部居中）。"""
+    x = (C.WINDOW_WIDTH - CHEST_W) // 2
+    y = 40
+    return x, y
+
+
+def _chest_inv_origin():
+    """箱子打开时玩家背包网格左上角（往下让位给箱子）。"""
+    x = (C.WINDOW_WIDTH - INV_GRID_W) // 2
+    y = 40 + CHEST_H + 16
+    return x, y
+
+
+def _grid_hit_test(mx, my, origin, w, h, cols, rows, area_name):
+    """通用网格命中检测：返回 (area_name, idx) 或 None。"""
+    ox, oy = origin
+    if not (ox <= mx < ox + w and oy <= my < oy + h):
+        return None
+    lx = mx - ox - INV_PAD
+    ly = my - oy - INV_PAD
+    if lx < 0 or ly < 0:
+        return None
+    col = int(lx) // (INV_CELL + INV_GAP)
+    row = int(ly) // (INV_CELL + INV_GAP)
+    if not (0 <= col < cols and 0 <= row < rows):
+        return None
+    cell_lx = col * (INV_CELL + INV_GAP)
+    cell_ly = row * (INV_CELL + INV_GAP)
+    if not (cell_lx <= lx < cell_lx + INV_CELL and cell_ly <= ly < cell_ly + INV_CELL):
+        return None
+    return (area_name, int(row * cols + col))
+
+
+def _slot_at_pos(pos, hotbar_size, inv_origin, chest_origin=None):
+    """命中检测：返回 (区域, 索引) 或 None。
+    区域："hotbar" 0..7 / "grid" 0..31 / "chest" 0..14（仅当 chest_origin 给出时检测）。"""
     mx, my = pos
     # 热栏
     bx, by = _hotbar_origin(hotbar_size)
@@ -444,53 +594,66 @@ def _slot_at_pos(pos, hotbar_size, inv_origin):
         lx = mx - bx - HOTBAR_PAD
         ly = my - by - HOTBAR_PAD
         col = lx // (HOTBAR_CELL + HOTBAR_GAP) if lx >= 0 else -1
-        # 热栏单行，ly 直接判断是否在 cell 高度内即可
         if 0 <= col < HOTBAR_SLOTS and 0 <= ly < HOTBAR_CELL:
             return ("hotbar", int(col))
     # 背包网格
-    gx, gy = inv_origin
-    if gx <= mx < gx + INV_GRID_W and gy <= my < gy + INV_GRID_H:
-        lx = mx - gx - INV_PAD
-        ly = my - gy - INV_PAD
-        col = int(lx) // (INV_CELL + INV_GAP) if lx >= 0 else -1
-        row = int(ly) // (INV_CELL + INV_GAP) if ly >= 0 else -1
-        if 0 <= col < INV_COLS and 0 <= row < INV_ROWS:
-            cell_lx = col * (INV_CELL + INV_GAP)
-            cell_ly = row * (INV_CELL + INV_GAP)
-            if cell_lx <= lx < cell_lx + INV_CELL and cell_ly <= ly < cell_ly + INV_CELL:
-                return ("grid", int(row * INV_COLS + col))
+    g = _grid_hit_test(mx, my, inv_origin, INV_GRID_W, INV_GRID_H, INV_COLS, INV_ROWS, "grid")
+    if g is not None:
+        return g
+    # 箱子网格（仅当提供 chest_origin 时）
+    if chest_origin is not None:
+        c = _grid_hit_test(mx, my, chest_origin, CHEST_W, CHEST_H, CHEST_COLS, CHEST_ROWS, "chest")
+        if c is not None:
+            return c
     return None
 
 
-def _stash_or_drop(stack, inv_grid, inv_counts):
-    """把拖拽中的 stack 放回去：优先匹配的热栏槽 → 同种 grid 槽 → 任意空槽。
-    stack 是 dict {"block_idx","count"}；满了就丢弃剩余。"""
+def _add_block_to_storage(hotbar, inv_grid, block_idx, count):
+    """把 count 个方块塞进存储：先叠到热栏同种栈 → 热栏空槽 → 背宾同种栈 → 背宾空槽。
+    返回没塞进去的剩余数量（满了才会剩）。"""
+    # 1) 热栏同种栈
+    for i in range(BLOCK_SLOT_BASE, HOTBAR_SLOTS):
+        s = hotbar[i]
+        if s and s["block_idx"] == block_idx and s["count"] < INV_STACK_MAX:
+            room = INV_STACK_MAX - s["count"]
+            move = min(room, count)
+            s["count"] += move
+            count -= move
+            if count == 0:
+                return 0
+    # 2) 热栏空槽
+    for i in range(BLOCK_SLOT_BASE, HOTBAR_SLOTS):
+        if hotbar[i] is None:
+            move = min(count, INV_STACK_MAX)
+            hotbar[i] = {"block_idx": block_idx, "count": move}
+            count -= move
+            if count == 0:
+                return 0
+    # 3) 背包同种栈
+    for cell in inv_grid:
+        if cell and cell["block_idx"] == block_idx and cell["count"] < INV_STACK_MAX:
+            room = INV_STACK_MAX - cell["count"]
+            move = min(room, count)
+            cell["count"] += move
+            count -= move
+            if count == 0:
+                return 0
+    # 4) 背包空槽
+    for i in range(len(inv_grid)):
+        if inv_grid[i] is None:
+            move = min(count, INV_STACK_MAX)
+            inv_grid[i] = {"block_idx": block_idx, "count": move}
+            count -= move
+            if count == 0:
+                return 0
+    return count
+
+
+def _stash_or_drop(stack, hotbar, inv_grid):
+    """把拖拽中的 stack 放回去（取消拖拽时用）。满了就丢弃剩余。"""
     bi = stack["block_idx"]
-    # 1) 对应的热栏方块槽
-    if inv_counts[bi] < INV_STACK_MAX:
-        room = INV_STACK_MAX - inv_counts[bi]
-        move = min(room, stack["count"])
-        inv_counts[bi] += move
-        stack["count"] -= move
-    # 2) 同种的 grid 槽
-    if stack["count"] > 0:
-        for cell in inv_grid:
-            if cell and cell["block_idx"] == bi and cell["count"] < INV_STACK_MAX:
-                room = INV_STACK_MAX - cell["count"]
-                move = min(room, stack["count"])
-                cell["count"] += move
-                stack["count"] -= move
-                if stack["count"] == 0:
-                    break
-    # 3) 任意空 grid 槽
-    while stack["count"] > 0:
-        try:
-            idx = inv_grid.index(None)
-        except ValueError:
-            break  # 背包满：剩余丢弃
-        move = min(INV_STACK_MAX, stack["count"])
-        inv_grid[idx] = {"block_idx": bi, "count": move}
-        stack["count"] -= move
+    leftover = _add_block_to_storage(hotbar, inv_grid, bi, stack["count"])
+    stack["count"] = leftover
 
 
 # ============================================================
@@ -934,15 +1097,30 @@ def run_epilogue(font):
     quit_rect.y = int(C.WINDOW_HEIGHT * 0.5 + 30)
 
     # ---- 背包 + 手持物品 ----
-    inv_counts = [16, 16, 16, 16, 16, 16]   # 6 种可放置方块各给 16 个起步
-    # 32 格 stash（背包），每格 None 或 {"block_idx": 0..5, "count": int}
+    # 热栏 8 格：0/1 = 工具占位（None），2-7 = 自由方块槽（任意方块可放任意槽）
+    # 每个方块槽为 None 或 {"block_idx": 0..5, "count": int}
+    hotbar = [
+        None, None,
+        {"block_idx": 0, "count": 16},   # dirt
+        {"block_idx": 1, "count": 16},   # stone
+        {"block_idx": 2, "count": 16},   # wood
+        {"block_idx": 3, "count": 16},   # sand
+        {"block_idx": 4, "count": 16},   # snow
+        {"block_idx": 5, "count": 16},   # grass
+    ]
+    # 32 格 stash（背包），每格 None 或 {"block_idx": 0..7, "count": int}
     inv_grid = [None] * (INV_COLS * INV_ROWS)
     inventory_open = False                  # E 键开关
     inv_drag = None                         # 拖拽中的物品，None 或 {"block_idx","count"}
+    # 箱子（右键 SLOT_CHEST 方块打开）：每个箱子有独立库存，存在 chest_invs 字典里
+    chest_open = False
+    chest_pos = None                        # 当前打开的箱子方块坐标 (x,y,z)
+    chest_invs = {}                         # {(x,y,z): [15 个 stack 或 None]}
     # sel_idx: 0=稿子, 1=剑, 2-7=方块
     swing_timer = 0.0                        # 挥动动画剩余秒数
     # 热栏小图标（48px）+ 手持大图标（96px）
     tool_hotbar = [_load_icon_surface(f, scale=3) for f in TOOL_ICON_FILES]
+    block_hotbar = [_load_icon_surface(f, scale=3) for f in BLOCK_ICON_FILES]
     held_tool_tex = []
     for f in TOOL_ICON_FILES:
         s = _load_icon_surface(f, scale=6)
@@ -951,12 +1129,16 @@ def run_epilogue(font):
     for f in BLOCK_ICON_FILES:
         s = _load_icon_surface(f, scale=6)
         held_block_tex.append(_surface_to_texture(s, flip=False) if s else None)
-    hotbar_surf = _build_hotbar_surface(font, inv_counts, sel_idx, tool_hotbar)
+    hotbar_surf = _build_hotbar_surface(font, hotbar, sel_idx, tool_hotbar, block_hotbar)
     hotbar_tex = _surface_to_texture(hotbar_surf, flip=False)
     hotbar_size = hotbar_surf.get_size()
     inv_surf = _build_inventory_surface(font, inv_grid)
     inv_tex = _surface_to_texture(inv_surf, flip=False)
     inv_size = inv_surf.get_size()
+    # 箱子 Surface（按当前打开的 chest_invs[chest_pos] 构建；未开箱子时占位空网格）
+    chest_tex = _surface_to_texture(_build_chest_surface(font, [None] * (CHEST_COLS * CHEST_ROWS)),
+                                    flip=False)
+    chest_size = (CHEST_W, CHEST_H)
 
     def _refresh_hotbar():
         nonlocal hotbar_tex, hotbar_size
@@ -964,9 +1146,22 @@ def run_epilogue(font):
             glDeleteTextures([hotbar_tex])
         except Exception:
             pass
-        ns = _build_hotbar_surface(font, inv_counts, sel_idx, tool_hotbar)
+        ns = _build_hotbar_surface(font, hotbar, sel_idx, tool_hotbar, block_hotbar)
         hotbar_tex = _surface_to_texture(ns, flip=False)
         hotbar_size = ns.get_size()
+
+    def _refresh_chest():
+        nonlocal chest_tex, chest_size
+        try:
+            glDeleteTextures([chest_tex])
+        except Exception:
+            pass
+        contents = chest_invs.get(chest_pos) if chest_pos is not None else None
+        if contents is None:
+            contents = [None] * (CHEST_COLS * CHEST_ROWS)
+        ns = _build_chest_surface(font, contents)
+        chest_tex = _surface_to_texture(ns, flip=False)
+        chest_size = ns.get_size()
 
     def _refresh_inventory():
         nonlocal inv_tex, inv_size
@@ -1005,7 +1200,7 @@ def run_epilogue(font):
 
     # HUD 文字纹理
     hud_surf = font.render(
-        "3D - WASD | SPACE jump | LMB mine | RMB place | 1-2 tool / 3-8 block | SHIFT/WW sprint | ESC pause",
+        "3D - WASD | SPACE jump | LMB mine | RMB place / open chest | E inventory | 1-2 tool / 3-8 block | SHIFT sprint | ESC pause",
         True, (255, 255, 255))
     hud_tex = _surface_to_texture(hud_surf, flip=False)
     pause_surf = font.render(
@@ -1037,37 +1232,59 @@ def run_epilogue(font):
                 running = False
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
-                    paused = not paused
-                    if paused:
-                        pygame.mouse.set_visible(True)
-                        pygame.event.set_grab(False)
-                    else:
-                        # ESC 恢复时强制关掉背包（避免两种"非游戏态"叠加）
-                        if inventory_open:
-                            inventory_open = False
-                            inv_drag = None
-                            _refresh_inventory()
-                        pygame.mouse.set_visible(False)
-                        pygame.event.set_grab(True)
-                        pygame.event.get()  # 清空旧事件，避免累积位移
-                elif event.key == pygame.K_e and not paused:
-                    # 切换背包：开 → 释放鼠标；关 → 锁回鼠标
-                    inventory_open = not inventory_open
-                    inv_drag = None
-                    _refresh_inventory()
-                    if inventory_open:
-                        pygame.mouse.set_visible(True)
-                        pygame.event.set_grab(False)
-                    else:
+                    if chest_open:
+                        # ESC 先关箱子（不影响 paused）
+                        chest_open = False
+                        chest_pos = None
+                        inv_drag = None
+                        _refresh_chest()
                         pygame.mouse.set_visible(False)
                         pygame.event.set_grab(True)
                         pygame.event.get()
+                    elif inventory_open:
+                        inventory_open = False
+                        inv_drag = None
+                        _refresh_inventory()
+                        pygame.mouse.set_visible(False)
+                        pygame.event.set_grab(True)
+                        pygame.event.get()
+                    else:
+                        paused = not paused
+                        if paused:
+                            pygame.mouse.set_visible(True)
+                            pygame.event.set_grab(False)
+                        else:
+                            pygame.mouse.set_visible(False)
+                            pygame.event.set_grab(True)
+                            pygame.event.get()  # 清空旧事件，避免累积位移
+                elif event.key == pygame.K_e and not paused:
+                    if chest_open:
+                        # E 在箱子打开时切换为"看背包"（关掉箱子继续显示背包）
+                        chest_open = False
+                        chest_pos = None
+                        inv_drag = None
+                        _refresh_chest()
+                        inventory_open = True
+                        _refresh_inventory()
+                    else:
+                        # 切换背包：开 → 释放鼠标；关 → 锁回鼠标
+                        inventory_open = not inventory_open
+                        inv_drag = None
+                        _refresh_inventory()
+                        if inventory_open:
+                            pygame.mouse.set_visible(True)
+                            pygame.event.set_grab(False)
+                        else:
+                            pygame.mouse.set_visible(False)
+                            pygame.event.set_grab(True)
+                            pygame.event.get()
                 elif event.key == pygame.K_q and paused:
                     running = False
-                elif pygame.K_1 <= event.key <= pygame.K_8 and not paused and not inventory_open:
+                elif (pygame.K_1 <= event.key <= pygame.K_8
+                      and not paused and not inventory_open and not chest_open):
                     sel_idx = event.key - pygame.K_1
                     _refresh_hotbar()
-                elif event.key == pygame.K_w and not paused and not inventory_open:
+                elif event.key == pygame.K_w and not paused and not inventory_open and not chest_open:
                     # 双击 W（300ms 内）触发疾跑
                     now = pygame.time.get_ticks()
                     if now - last_w_tap < 300:
@@ -1086,80 +1303,78 @@ def run_epilogue(font):
                         pygame.mouse.set_visible(False)
                         pygame.event.set_grab(True)
                         pygame.event.get()
-                elif inventory_open and event.button == 1:
-                    # ---- 背包拖拽（单击进入拖拽态，再次点击放下） ----
-                    slot = _slot_at_pos(event.pos, hotbar_size, _inventory_grid_origin())
+                elif (inventory_open or chest_open) and event.button == 1:
+                    # ---- 背包/箱子拖拽（统一处理） ----
+                    # 根据当前模式传给 _slot_at_pos 不同的 origin 和可选 chest 区域
+                    if chest_open:
+                        inv_origin_v = _chest_inv_origin()
+                        slot = _slot_at_pos(event.pos, hotbar_size, inv_origin_v,
+                                            chest_origin=_chest_grid_origin())
+                    else:
+                        inv_origin_v = _inventory_grid_origin()
+                        slot = _slot_at_pos(event.pos, hotbar_size, inv_origin_v)
+                    # 取出当前箱子库存引用（仅 chest_open 时非 None）
+                    chest_list = chest_invs.get(chest_pos) if chest_open else None
+
+                    def _slot_get(a, i):
+                        if a == "hotbar": return hotbar[i]
+                        if a == "grid":   return inv_grid[i]
+                        if a == "chest" and chest_list is not None: return chest_list[i]
+                        return None
+
+                    def _slot_set(a, i, v):
+                        if a == "hotbar":   hotbar[i] = v
+                        elif a == "grid":   inv_grid[i] = v
+                        elif a == "chest" and chest_list is not None: chest_list[i] = v
+
+                    def _slot_refresh(a):
+                        if a == "hotbar": _refresh_hotbar()
+                        elif a == "grid": _refresh_inventory()
+                        elif a == "chest": _refresh_chest()
+
                     if inv_drag is None:
-                        # 拾起：从点击的槽位抓出整堆
+                        # 拾起：从点击的槽位抓出整堆（工具槽 idx 0/1 不可拖）
                         if slot is not None:
                             area, idx = slot
-                            if area == "hotbar":
-                                # 只有方块槽（idx >= BLOCK_SLOT_BASE）能拖
-                                if idx >= BLOCK_SLOT_BASE:
-                                    bi = idx - BLOCK_SLOT_BASE
-                                    if inv_counts[bi] > 0:
-                                        inv_drag = {"block_idx": bi, "count": inv_counts[bi]}
-                                        inv_counts[bi] = 0
-                                        _refresh_hotbar()
-                            else:  # grid
-                                if inv_grid[idx] is not None:
-                                    inv_drag = {"block_idx": inv_grid[idx]["block_idx"],
-                                                "count": inv_grid[idx]["count"]}
-                                    inv_grid[idx] = None
-                                    _refresh_inventory()
+                            if area == "hotbar" and idx < BLOCK_SLOT_BASE:
+                                pass    # 工具槽：忽略
+                            else:
+                                cur = _slot_get(area, idx)
+                                if cur is not None:
+                                    inv_drag = dict(cur)
+                                    _slot_set(area, idx, None)
+                                    _slot_refresh(area)
                     else:
                         # 放下：合并 / 交换 / 进空槽
-                        if slot is None:
-                            _stash_or_drop(inv_drag, inv_grid, inv_counts)
+                        if slot is None or (slot[0] == "hotbar" and slot[1] < BLOCK_SLOT_BASE):
+                            # 没点中槽位 / 点中工具槽：取消拖拽，物品归位
+                            _stash_or_drop(inv_drag, hotbar, inv_grid)
                             inv_drag = None
                             _refresh_hotbar(); _refresh_inventory()
                         else:
                             area, idx = slot
-                            if area == "hotbar":
-                                if idx < BLOCK_SLOT_BASE:
-                                    # 工具槽不接受方块：取消拖拽
-                                    _stash_or_drop(inv_drag, inv_grid, inv_counts)
-                                    inv_drag = None
+                            target = _slot_get(area, idx)
+                            if target is None:
+                                _slot_set(area, idx, dict(inv_drag))
+                                inv_drag = None
+                                _slot_refresh(area)
+                            elif target["block_idx"] == inv_drag["block_idx"]:
+                                total = target["count"] + inv_drag["count"]
+                                capped = min(total, INV_STACK_MAX)
+                                target["count"] = capped       # 原地改（dict 是引用）
+                                leftover = total - capped
+                                if leftover > 0:
+                                    _stash_or_drop({"block_idx": target["block_idx"],
+                                                    "count": leftover}, hotbar, inv_grid)
                                     _refresh_hotbar(); _refresh_inventory()
-                                else:
-                                    target_bi = idx - BLOCK_SLOT_BASE
-                                    if target_bi == inv_drag["block_idx"]:
-                                        total = inv_counts[target_bi] + inv_drag["count"]
-                                        capped = min(total, INV_STACK_MAX)
-                                        inv_counts[target_bi] = capped
-                                        leftover = total - capped
-                                        if leftover > 0:
-                                            _stash_or_drop({"block_idx": target_bi, "count": leftover},
-                                                           inv_grid, inv_counts)
-                                        inv_drag = None
-                                        _refresh_hotbar(); _refresh_inventory()
-                                    else:
-                                        # 不同种方块：热栏槽位是固定类型，不能塞别的
-                                        _stash_or_drop(inv_drag, inv_grid, inv_counts)
-                                        inv_drag = None
-                                        _refresh_hotbar(); _refresh_inventory()
-                            else:  # grid
-                                if inv_grid[idx] is None:
-                                    inv_grid[idx] = dict(inv_drag)
-                                    inv_drag = None
-                                    _refresh_inventory()
-                                elif inv_grid[idx]["block_idx"] == inv_drag["block_idx"]:
-                                    total = inv_grid[idx]["count"] + inv_drag["count"]
-                                    capped = min(total, INV_STACK_MAX)
-                                    inv_grid[idx]["count"] = capped
-                                    leftover = total - capped
-                                    if leftover > 0:
-                                        _stash_or_drop({"block_idx": inv_grid[idx]["block_idx"],
-                                                        "count": leftover}, inv_grid, inv_counts)
-                                        _refresh_hotbar()
-                                    inv_drag = None
-                                    _refresh_inventory()
-                                else:
-                                    # 不同种 → 交换（用户继续拿着原来的那堆）
-                                    old = inv_grid[idx]
-                                    inv_grid[idx] = dict(inv_drag)
-                                    inv_drag = dict(old)
-                                    _refresh_inventory()
+                                inv_drag = None
+                                _slot_refresh(area)
+                            else:
+                                # 不同种 → 交换（用户继续拿着原来那堆）
+                                old = dict(target)
+                                _slot_set(area, idx, dict(inv_drag))
+                                inv_drag = old
+                                _slot_refresh(area)
                 else:
                     # 游戏中：左键攻击/挖 / 右键放
                     if event.button == 1:
@@ -1188,11 +1403,26 @@ def run_epilogue(font):
                             mining_target = target_block
                             mining_progress = 0.0
                             swing_timer = SWING_DURATION
-                    elif event.button == 3 and target_block is not None and place_block is not None:
-                        # 必须瞄准实心方块才能放（杜绝悬空放置）
-                        if sel_idx >= BLOCK_SLOT_BASE:
-                            bi = sel_idx - BLOCK_SLOT_BASE
-                            if inv_counts[bi] > 0:
+                    elif event.button == 3 and target_block is not None:
+                        # 右键：先判断是否点中箱子（开箱子界面）；否则尝试放方块
+                        bx_, by_, bz_ = target_block
+                        if (0 <= bx_ < W and 0 <= bz_ < W and 0 <= by_ < MAX_H
+                                and solid[bx_][bz_][by_]
+                                and tgrid[bx_][bz_][by_] == SLOT_CHEST):
+                            # 开箱子：lazy-init 该坐标的库存（每个箱子固定 loot，按位置 seed）
+                            chest_pos = (bx_, by_, bz_)
+                            if chest_pos not in chest_invs:
+                                chest_invs[chest_pos] = _make_chest_inventory(bx_, bz_)
+                            chest_open = True
+                            inv_drag = None
+                            _refresh_chest()
+                            pygame.mouse.set_visible(True)
+                            pygame.event.set_grab(False)
+                        elif place_block is not None and sel_idx >= BLOCK_SLOT_BASE:
+                            # 放方块（必须瞄准实心方块前的空格，杜绝悬空）
+                            stack = hotbar[sel_idx]
+                            if stack is not None and stack["count"] > 0:
+                                bi = stack["block_idx"]
                                 px_, py_, pz_ = place_block
                                 if (0 <= px_ < W and 0 <= pz_ < W and 0 <= py_ < MAX_H
                                         and not solid[px_][pz_][py_]):
@@ -1200,11 +1430,13 @@ def run_epilogue(font):
                                         solid[px_][pz_][py_] = True
                                         tgrid[px_][pz_][py_] = PLACEABLE_BLOCKS[bi]
                                         vert_count = _rebuild_vbo(solid, tgrid, slot_uv, vbo_id)
-                                        inv_counts[bi] -= 1
+                                        stack["count"] -= 1
+                                        if stack["count"] == 0:
+                                            hotbar[sel_idx] = None
                                         _refresh_hotbar()
                                         swing_timer = SWING_DURATION
 
-        if not paused and not inventory_open:
+        if not paused and not inventory_open and not chest_open:
             if swing_timer > 0:
                 swing_timer = max(0.0, swing_timer - dt)
             # 鼠标视角
@@ -1296,8 +1528,10 @@ def run_epilogue(font):
                             tgrid[hx][hz][hy] = 0
                             vert_count = _rebuild_vbo(solid, tgrid, slot_uv, vbo_id)
                             if mined in PLACEABLE_BLOCKS:
-                                inv_counts[PLACEABLE_BLOCKS.index(mined)] += 1
+                                _add_block_to_storage(hotbar, inv_grid,
+                                                      PLACEABLE_BLOCKS.index(mined), 1)
                                 _refresh_hotbar()
+                                _refresh_inventory()
                             try:
                                 from assets import play_sound
                                 play_sound("dig", 0.35)
@@ -1369,13 +1603,13 @@ def run_epilogue(font):
         elif sel_idx == 1:
             held_tex, is_hand = held_tool_tex[1], False
         else:
-            bi = sel_idx - BLOCK_SLOT_BASE
-            if inv_counts[bi] > 0 and held_block_tex[bi]:
-                held_tex, is_hand = held_block_tex[bi], False
+            stack = hotbar[sel_idx]
+            if stack is not None and stack["count"] > 0 and held_block_tex[stack["block_idx"]]:
+                held_tex, is_hand = held_block_tex[stack["block_idx"]], False
             else:
                 held_tex, is_hand = None, True
         swing_progress = 1.0 - swing_timer / SWING_DURATION if swing_timer > 0 else 0.0
-        if not paused and not inventory_open and (held_tex is not None or is_hand):
+        if not paused and not inventory_open and not chest_open and (held_tex is not None or is_hand):
             _draw_viewmodel(held_tex, is_hand, swing_progress, walk_phase, moving)
 
         # ---- HUD（正交投影）----
@@ -1387,6 +1621,12 @@ def run_epilogue(font):
         if inventory_open:
             _draw_inventory_overlay(inv_tex, inv_size, inv_drag, held_block_tex, font,
                                     _inventory_grid_origin())
+        # 箱子叠加层（右键箱子打开时）：箱子网格 + 玩家背包 + 热栏
+        if chest_open:
+            _draw_chest_overlay(chest_tex, chest_size, inv_tex, inv_size,
+                                inv_drag, held_block_tex, font,
+                                _chest_grid_origin(), _chest_inv_origin(),
+                                hotbar_tex, hotbar_size)
 
         pygame.display.flip()
 
@@ -1395,13 +1635,18 @@ def run_epilogue(font):
     pygame.event.set_grab(False)
     try:
         held_all = [t for t in held_tool_tex + held_block_tex if t is not None]
-        texs = [atlas_tex, hud_tex, pause_tex, quit_tex, hotbar_tex, inv_tex]
+        texs = [atlas_tex, hud_tex, pause_tex, quit_tex, hotbar_tex, inv_tex, chest_tex]
         if slime_tex is not None:
             texs.append(slime_tex)
         if slime_face_tex is not None:
             texs.append(slime_face_tex)
         glDeleteTextures(texs + ([king_tex] if king_tex else []) + held_all)
         glDeleteBuffers([vbo_id])
+        # 清掉文本贴图缓存（GL context 即将销毁，避免悬空 id 跨场景复用）
+        cached = [t for t, _ in _text_cache.values()]
+        _text_cache.clear()
+        if cached:
+            glDeleteTextures(cached)
     except Exception:
         pass
     # 切回普通 Surface 模式（供菜单使用）
@@ -1753,71 +1998,69 @@ def _draw_inventory_overlay(inv_tex, inv_size, inv_drag, held_block_tex, font, i
     glVertex2f(0, C.WINDOW_HEIGHT)
     glEnd()
 
-    # 背包网格贴片
     gx, gy = inv_origin
     iw, ih = inv_size
     glEnable(GL_TEXTURE_2D)
-    glBindTexture(GL_TEXTURE_2D, inv_tex)
-    glColor4f(1, 1, 1, 1)
+    _blit_textured_quad(inv_tex, gx, gy, iw, ih)
+
+    title_str = "Inventory  -  E/ESC close  -  click to pick up, click again to drop"
+    tw, th = _cached_text_texture(font, title_str, (255, 230, 80))[1]
+    _blit_text(font, title_str, (C.WINDOW_WIDTH - tw) // 2, gy - th - 8)
+
+    _draw_drag_icon(inv_drag, held_block_tex, font)
+
+    glDisable(GL_BLEND)
+    glEnable(GL_DEPTH_TEST)
+    glPopMatrix()
+    glMatrixMode(GL_PROJECTION)
+    glPopMatrix()
+    glMatrixMode(GL_MODELVIEW)
+
+
+def _draw_chest_overlay(chest_tex, chest_size, inv_tex, inv_size,
+                        inv_drag, held_block_tex, font,
+                        chest_origin, inv_origin, hotbar_tex, hotbar_size):
+    """右键箱子打开时画：半透明遮罩 + 箱子网格（上）+ 玩家背包（中）+ 热栏（下）+ 拖拽物品（贴鼠标）。"""
+    glMatrixMode(GL_PROJECTION)
+    glPushMatrix()
+    glLoadIdentity()
+    glOrtho(0, C.WINDOW_WIDTH, C.WINDOW_HEIGHT, 0, -1, 1)
+    glMatrixMode(GL_MODELVIEW)
+    glPushMatrix()
+    glLoadIdentity()
+
+    glDisable(GL_DEPTH_TEST)
+    glDisable(GL_TEXTURE_2D)
+    glEnable(GL_BLEND)
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+
+    # 半透明遮罩
+    glColor4f(0.0, 0.0, 0.0, 0.6)
     glBegin(GL_QUADS)
-    glTexCoord2f(0, 0); glVertex2f(gx, gy)
-    glTexCoord2f(1, 0); glVertex2f(gx + iw, gy)
-    glTexCoord2f(1, 1); glVertex2f(gx + iw, gy + ih)
-    glTexCoord2f(0, 1); glVertex2f(gx, gy + ih)
+    glVertex2f(0, 0)
+    glVertex2f(C.WINDOW_WIDTH, 0)
+    glVertex2f(C.WINDOW_WIDTH, C.WINDOW_HEIGHT)
+    glVertex2f(0, C.WINDOW_HEIGHT)
     glEnd()
 
-    # 顶部标题
-    title = font.render("Inventory  -  E/ESC close  -  click to pick up, click again to drop",
-                        True, (255, 230, 80))
-    title_tex = _surface_to_texture(title, flip=False)
-    glBindTexture(GL_TEXTURE_2D, title_tex)
-    tw, th = title.get_size()
-    tx = (C.WINDOW_WIDTH - tw) // 2
-    ty = gy - th - 8
-    glBegin(GL_QUADS)
-    glTexCoord2f(0, 0); glVertex2f(tx, ty)
-    glTexCoord2f(1, 0); glVertex2f(tx + tw, ty)
-    glTexCoord2f(1, 1); glVertex2f(tx + tw, ty + th)
-    glTexCoord2f(0, 1); glVertex2f(tx, ty + th)
-    glEnd()
-    try:
-        glDeleteTextures([title_tex])
-    except Exception:
-        pass
+    glEnable(GL_TEXTURE_2D)
+    # 箱子网格 / 玩家背包 / 底部热栏
+    _blit_textured_quad(chest_tex, chest_origin[0], chest_origin[1], chest_size[0], chest_size[1])
+    _blit_textured_quad(inv_tex, inv_origin[0], inv_origin[1], inv_size[0], inv_size[1])
+    bx, by = _hotbar_origin(hotbar_size)
+    _blit_textured_quad(hotbar_tex, bx, by, hotbar_size[0], hotbar_size[1])
 
-    # 拖拽中的物品（贴在鼠标位置）
-    if inv_drag is not None:
-        bi = inv_drag["block_idx"]
-        mx, my = pygame.mouse.get_pos()
-        # 优先用方块大图，没有就画色块
-        tex = held_block_tex[bi] if bi < len(held_block_tex) else None
-        cs = 48
-        if tex is not None:
-            glBindTexture(GL_TEXTURE_2D, tex)
-            glColor4f(1, 1, 1, 1)
-            glBegin(GL_QUADS)
-            glTexCoord2f(0, 0); glVertex2f(mx - cs // 2, my - cs // 2)
-            glTexCoord2f(1, 0); glVertex2f(mx + cs // 2, my - cs // 2)
-            glTexCoord2f(1, 1); glVertex2f(mx + cs // 2, my + cs // 2)
-            glTexCoord2f(0, 1); glVertex2f(mx - cs // 2, my + cs // 2)
-            glEnd()
-        # 数量
-        cnt = font.render(str(inv_drag["count"]), True, (255, 255, 255))
-        cnt_tex = _surface_to_texture(cnt, flip=False)
-        glBindTexture(GL_TEXTURE_2D, cnt_tex)
-        cw, chh = cnt.get_size()
-        cx_ = mx + cs // 2 - cw - 2
-        cy_ = my + cs // 2 - chh - 2
-        glBegin(GL_QUADS)
-        glTexCoord2f(0, 0); glVertex2f(cx_, cy_)
-        glTexCoord2f(1, 0); glVertex2f(cx_ + cw, cy_)
-        glTexCoord2f(1, 1); glVertex2f(cx_ + cw, cy_ + chh)
-        glTexCoord2f(0, 1); glVertex2f(cx_, cy_ + chh)
-        glEnd()
-        try:
-            glDeleteTextures([cnt_tex])
-        except Exception:
-            pass
+    # 标题
+    cx0, cy0 = chest_origin
+    chest_title = "Chest  -  E/ESC close  -  drag to take items"
+    ctw = _cached_text_texture(font, chest_title, (255, 230, 80))[1][0]
+    _blit_text(font, chest_title, (C.WINDOW_WIDTH - ctw) // 2, cy0 - 22)
+    ix0, iy0 = inv_origin
+    inv_title = "Inventory"
+    itw = _cached_text_texture(font, inv_title, (200, 200, 200))[1][0]
+    _blit_text(font, inv_title, (C.WINDOW_WIDTH - itw) // 2, iy0 - 20, (200, 200, 200))
+
+    _draw_drag_icon(inv_drag, held_block_tex, font)
 
     glDisable(GL_BLEND)
     glEnable(GL_DEPTH_TEST)

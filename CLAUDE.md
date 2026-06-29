@@ -352,3 +352,25 @@ TypeError: 'NoneType' object is not iterable
 1.箱子需要能右键交互打开,里面要摆东西,最好是比较珍贵的物品
 2.我得自己去找一下史莱姆生成的各种参数,把速度调慢一点,同时存在数目也调低一点
 3.物品栏除了稿子和剑,其他方块的图标不知道为什么都是填满了格子的涂色,你直接放图标不就行了吗(我拖动方块发现显示的是图标),这个结果就导致,我把物品栏3位置的土方块放到背包后,三位置还是黄色的涂色,然后我想把土方块放到位置4发现,他自动跑到位置3去了
+
+# ver5.0（实现）
+1. **箱子右键交互** 右键瞄准 SLOT_CHEST 方块开箱子界面；每个箱子按坐标 seed 生成固定 loot（必给铜矿/银矿/木头，随机额外的石头/沙/雪等）；拖拽可在箱子 ↔ 玩家热栏/背包间自由移动；E/ESC 关闭
+2. **物品栏去类型化** 把 `inv_counts`（每类方块的计数数组）换成 `hotbar`（8 槽自由栈：0/1 工具，2-7 任意方块栈）；空栈不画图标；挖掘/放置/手持全部读 `hotbar[sel_idx]`
+3. **真实图标** 热栏方块槽画 `res/images/items/*.png` 真实图标（不是涂色块）；PLACEABLE_BLOCKS 扩到 8 种（新增铜/银矿石，从 chest 出）
+4. **Simplify pass** 提取 `_blit_textured_quad` / `_blit_text` / `_draw_drag_icon` / `_build_grid_surface` 共用辅助；文本贴图带 `_text_cache` 避免每帧 `glTexImage2D`/`glDeleteTextures`；magic 数字换成 `_BI_COPPER = PLACEABLE_BLOCKS.index(SLOT_COPPER)` 等命名常量
+
+# 史莱姆调参位置（ver4.9 用户问）
+- `SLIME_GRAVITY_3D = 18.0` 下落加速度（越小越漂浮）
+- `SLIME_JUMP_VY = 7.5` 起跳向上速度（越小跳得越低）
+- `SLIME_HSPEED = 4.0` 跳跃水平速度（越小越慢）
+- `SLIME_JUMP_INTERVAL = 1.0` + `SLIME_JUMP_JITTER = 0.5` 落地到下次起跳的间隔
+- `SLIME_LAG_TIME = 0.5` 朝向滞后时间常数
+- `SLIME_TURN_SPEED = 8.0` 朝向插值速度
+- `SLIME_SPAWNS` 列表（在 `run_epilogue` 里）每条 = (rx, rz, size, hp)，删/加条目即可改数量
+
+
+# ver5
+## 问题
+1.物品栏里的物品图标做好了，但是背包里的物品图标还是之前的问题，同样的道理修改
+2.防止方块后明显会卡一下，你看下为什么
+3.鼠标悬停到物品上时，需要显示该物品的名称
