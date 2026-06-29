@@ -9,8 +9,8 @@ from OpenGL.GL import *
 import constants as C
 
 # ---- 场景配置 ----
-WORLD_SIZE = 40          # 地面边长（立方体数）
-MAX_H = 8                # 最大高度
+WORLD_SIZE = 120         # 地面边长（立方体数）
+MAX_H = 18               # 最大高度（地下厚度 ~10+，地表 ~5-7）
 EYE_HEIGHT = 1.7
 MOVE_SPEED = 7.0         # 单位/秒
 LOOK_SENS = 0.15
@@ -25,6 +25,8 @@ PLAYER_HEIGHT_3D = 1.8   # 玩家碰撞框高度
 
 # 图集槽位编号
 SLOT_GRASS, SLOT_DIRT, SLOT_STONE, SLOT_WOOD, SLOT_LEAVES, SLOT_SAND, SLOT_SNOW = range(7)
+SLOT_COPPER, SLOT_SILVER = 7, 8     # 矿石（深地层散布）
+SLOT_CHEST = 9                       # 木屋里的箱子（装饰性方块）
 ATLAS_COLS = 4
 ATLAS_CELL = 16          # 每个槽 16x16
 ATLAS_SIZE = ATLAS_COLS * ATLAS_CELL  # 64
@@ -38,7 +40,18 @@ SLOT_COLORS = {
     SLOT_GRASS: (90, 160, 40), SLOT_DIRT: (139, 90, 43), SLOT_STONE: (128, 128, 128),
     SLOT_WOOD: (181, 137, 72), SLOT_LEAVES: (34, 120, 15), SLOT_SAND: (220, 200, 150),
     SLOT_SNOW: (240, 240, 255),
+    SLOT_COPPER: (180, 100, 50), SLOT_SILVER: (210, 210, 220),
+    SLOT_CHEST: (140, 90, 50),
 }
+# 每种方块的挖掘耗时（秒）——参考 2D 的硬度感
+TILE_MINE_TIME = {
+    SLOT_GRASS: 0.30, SLOT_DIRT: 0.30, SLOT_SAND: 0.30, SLOT_SNOW: 0.30,
+    SLOT_WOOD: 0.50, SLOT_LEAVES: 0.20,
+    SLOT_STONE: 0.80,
+    SLOT_COPPER: 1.10, SLOT_SILVER: 1.30,
+    SLOT_CHEST: 0.80,
+}
+DEFAULT_MINE_TIME = 0.50
 
 # 立方体 6 面：每面 4 个顶点偏移（按周长顺序），法线 + 亮度
 # 关键：每个面的顶点必须真的落在该法线所指的平面上，否则剔除判定（看邻居）
@@ -57,6 +70,156 @@ NEIGHBORS = [(0, 1, 0), (0, -1, 0), (0, 0, -1), (0, 0, 1), (1, 0, 0), (-1, 0, 0)
 
 
 # ============================================================
+# 史莱姆实体（3D 场景的方块史莱姆——会跳跃追玩家）
+# ============================================================
+class Slime3D:
+    """单只 3D 史莱姆。一个场景里可以有多只，每只独立 AI / 渲染 / HP / 复活。"""
+
+    def __init__(self, pos, size, ground_top_y, hp=None):
+        self.size = size
+        # pos 为几何中心；脚踩地时 cy = ground_top_y + size*0.5
+        self.pos = [pos[0], ground_top_y + size * 0.5, pos[2]]
+        self.spawn_pos = list(self.pos)
+        self.spawn_ground_top_y = ground_top_y
+        self.vel = [0.0, 0.0, 0.0]
+        self.grounded = True
+        # 朝向（弧度，绕 Y）：用于渲染旋转 + 起跳水平方向
+        self.heading = 0.0
+        # 起跳倒计时
+        import random as _r
+        self.jump_timer = 0.6 + _r.random() * 1.0
+        # HP 随大小缩放（0.6→60, 1.0→100, 1.5→150）
+        self.max_hp = hp if hp is not None else int(50 + size * 50)
+        self.hp = self.max_hp
+        self.alive = True
+        self.hurt = 0.0       # 受击闪红计时
+        self.respawn = 0.0    # 死亡复活倒计时
+        self.parts = []       # 死亡粒子
+
+    def update(self, dt, target_pos, height_grid, W):
+        """target_pos = 史莱姆追的目标位置（通常为玩家或滞后玩家位置）；
+        height_grid = 地表顶 y 网格（height[x][z]），用于落地检测。"""
+        import random as _r
+        import math as _m
+
+        # 受击计时
+        if self.hurt > 0:
+            self.hurt = max(0.0, self.hurt - dt)
+
+        if not self.alive:
+            # 死亡：粒子更新 + 复活倒计时
+            self.respawn -= dt
+            for p in self.parts:
+                p['vy'] -= 18.0 * dt
+                p['x'] += p['vx'] * dt
+                p['y'] += p['vy'] * dt
+                p['z'] += p['vz'] * dt
+                p['life'] -= dt
+            self.parts = [p for p in self.parts if p['life'] > 0]
+            if self.respawn <= 0:
+                self.alive = True
+                self.hp = self.max_hp
+                self.parts = []
+                # 复活时回到出生点
+                self.pos = list(self.spawn_pos)
+                self.vel = [0.0, 0.0, 0.0]
+                self.grounded = True
+                self.heading = 0.0
+                self.jump_timer = 1.0
+            return
+
+        # 朝向追踪：每帧把 heading 平滑插值向"指向目标"的角度（带滞后感）
+        dx_h = target_pos[0] - self.pos[0]
+        dz_h = target_pos[2] - self.pos[2]
+        if dx_h * dx_h + dz_h * dz_h > 1e-4:
+            desired = _m.atan2(dx_h, dz_h)
+            diff = (desired - self.heading + _m.pi) % (2 * _m.pi) - _m.pi
+            step = SLIME_TURN_SPEED * dt
+            if abs(diff) <= step:
+                self.heading = desired
+            else:
+                self.heading += _m.copysign(step, diff)
+
+        # 跳跃 AI：站定时倒计时，到点按 heading 起跳
+        if self.grounded:
+            self.vel[0] = 0.0
+            self.vel[2] = 0.0
+            self.jump_timer -= dt
+            if self.jump_timer <= 0:
+                self.jump_timer = SLIME_JUMP_INTERVAL + _r.random() * SLIME_JUMP_JITTER
+                # 小史莱姆更敏捷（跳得快），大史莱姆更慢更重
+                size_factor = 1.0 / max(0.6, self.size)
+                self.vel[0] = _m.sin(self.heading) * SLIME_HSPEED * size_factor
+                self.vel[2] = _m.cos(self.heading) * SLIME_HSPEED * size_factor
+                self.vel[1] = SLIME_JUMP_VY
+                self.grounded = False
+        else:
+            self.vel[1] -= SLIME_GRAVITY_3D * dt
+
+        # 位置积分
+        self.pos[0] += self.vel[0] * dt
+        self.pos[1] += self.vel[1] * dt
+        self.pos[2] += self.vel[2] * dt
+
+        # 落地检测：地表顶 + 半个身高
+        sx_i = int(self.pos[0])
+        sz_i = int(self.pos[2])
+        if 0 <= sx_i < W and 0 <= sz_i < W:
+            ground_top = height_grid[sx_i][sz_i] + 1
+        else:
+            ground_top = 0
+        floor_y = ground_top + self.size * 0.5
+        if self.pos[1] <= floor_y:
+            self.pos[1] = floor_y
+            self.vel = [0.0, 0.0, 0.0]
+            self.grounded = True
+
+    def damage(self, dmg):
+        if not self.alive:
+            return False
+        self.hp -= dmg
+        self.hurt = 0.18
+        if self.hp <= 0:
+            self.hp = 0
+            self.alive = False
+            self.respawn = 5.0
+            _spawn_king_particles(self.parts, tuple(self.pos))
+            return True   # 死亡
+        return False
+
+    def draw(self, body_tex, face_tex, cam_pos):
+        """渲染：5 面身体贴图 + 南面带眼睛的贴图 + 绕 Y 转 heading + 血条/粒子。"""
+        if self.alive and body_tex is not None:
+            tint = (1.0, 0.45, 0.45) if self.hurt > 0 else (1.0, 1.0, 1.0)
+            _draw_textured_cube(body_tex, tuple(self.pos), self.size, tint,
+                                side_tex=face_tex, face_yaw=self.heading)
+            if self.hp < self.max_hp:
+                bar_pos = (self.pos[0], self.pos[1] + self.size * 0.5 + 0.35, self.pos[2])
+                _draw_billboard_hp_bar(bar_pos, cam_pos, self.hp / self.max_hp,
+                                       width_world=max(0.8, self.size * 1.2))
+        if self.parts:
+            _draw_king_particles(self.parts, cam_pos)
+
+    def hit_test(self, eye, look_dir, sword_reach=7.5, cos_threshold=0.93):
+        """玩家用剑攻击命中判定：返回 True 表示被击中。
+        eye/look_dir 是玩家眼睛位置和单位朝向向量。"""
+        if not self.alive:
+            return False
+        kx = self.pos[0] - eye[0]
+        ky_ = self.pos[1] - eye[1]
+        kz = self.pos[2] - eye[2]
+        kdist = math.sqrt(kx * kx + ky_ * ky_ + kz * kz)
+        if kdist > sword_reach or kdist < 1e-4:
+            return False
+        # 命中半径随大小放宽（小史莱姆更难瞄）
+        eff_reach = sword_reach
+        cosang = (look_dir[0] * kx + look_dir[1] * ky_ + look_dir[2] * kz) / kdist
+        # 小史莱姆阈值更严格（cos 更高），大的更宽松
+        thr = cos_threshold - (self.size - 1.0) * 0.04
+        return cosang > thr
+
+
+# ============================================================
 # 资源构建
 # ============================================================
 def _build_atlas():
@@ -71,6 +234,9 @@ def _build_atlas():
         SLOT_LEAVES: "leaves.png",
         SLOT_SAND: "sand.png",
         SLOT_SNOW: "snow.png",
+        SLOT_COPPER: "copper.png",
+        SLOT_SILVER: "silver.png",
+        SLOT_CHEST: "multitiles/chest_wood.png",
     }
     atlas = pygame.Surface((ATLAS_SIZE, ATLAS_SIZE))
     atlas.fill((0, 0, 0))
@@ -83,9 +249,8 @@ def _build_atlas():
             img = pygame.transform.scale(img, (ATLAS_CELL, ATLAS_CELL))
             atlas.blit(img, (col * ATLAS_CELL, row * ATLAS_CELL))
         except Exception:
-            # 备用纯色
-            color = [(76, 153, 0), (139, 90, 43), (128, 128, 128),
-                     (181, 137, 72), (34, 120, 15), (220, 200, 150), (240, 240, 255)][slot]
+            # 备用纯色：从 SLOT_COLORS 取，避免索引越界
+            color = SLOT_COLORS.get(slot, (128, 128, 128))
             pygame.draw.rect(atlas, color,
                              (col * ATLAS_CELL, row * ATLAS_CELL, ATLAS_CELL, ATLAS_CELL))
     slot_uv = {}
@@ -131,6 +296,16 @@ HAND_COLOR = (224, 188, 144)              # 程序化手的肤色（占位，可
 HOTBAR_CELL = 54
 HOTBAR_GAP = 4
 HOTBAR_PAD = 6
+
+# ---- 背包（E 键打开）----
+INV_COLS = 8
+INV_ROWS = 4                                       # 8×4 = 32 格 stash
+INV_CELL = 44
+INV_GAP = 4
+INV_PAD = 8
+INV_GRID_W = INV_COLS * INV_CELL + (INV_COLS - 1) * INV_GAP + INV_PAD * 2   # 396
+INV_GRID_H = INV_ROWS * INV_CELL + (INV_ROWS - 1) * INV_GAP + INV_PAD * 2   # 204
+INV_STACK_MAX = 99
 
 # 工具图标（res/images/items/）
 TOOL_ICON_FILES = ["copper_pickaxe.png", "sword_copper.png"]
@@ -182,6 +357,11 @@ SLIME_JUMP_VY = 7.5          # 起跳向上速度（约能跳 ~1.5 格高）
 SLIME_HSPEED = 4.0           # 跳跃时水平速度（块/秒，2D 是 14，3D 慢得多）
 SLIME_JUMP_INTERVAL = 1.0    # 落地到下次起跳的最小间隔（秒）
 SLIME_JUMP_JITTER = 0.5      # 间隔随机抖动范围（秒）
+# 朝向追踪：通过指数平滑"史莱姆记忆的玩家位置"实现滞后感——
+# 玩家移动后，记忆位置慢慢追上来（约 3×SLIME_LAG_TIME 秒完全追上），
+# 史莱姆朝向读这个滞后位置而非实时，所以会有"等一下再开始转"的效果
+SLIME_LAG_TIME = 0.5         # 滞后时间常数（秒）——越大反应越慢
+SLIME_TURN_SPEED = 8.0       # 朝向插值速度（弧度/秒，滞后记忆变化已慢，转得快点没问题）
 
 
 def _build_hotbar_surface(font, inv_counts, sel_idx, tool_surfs):
@@ -219,6 +399,100 @@ def _build_hotbar_surface(font, inv_counts, sel_idx, tool_surfs):
     return surf
 
 
+def _build_inventory_surface(font, inv_grid):
+    """构建背包网格 Surface：8×4 格，每格画方块色块 + 数量（空格只画底色）。"""
+    surf = pygame.Surface((INV_GRID_W, INV_GRID_H), pygame.SRCALPHA)
+    pygame.draw.rect(surf, (10, 10, 14, 235), surf.get_rect(), border_radius=6)
+    for row in range(INV_ROWS):
+        for col in range(INV_COLS):
+            cx = INV_PAD + col * (INV_CELL + INV_GAP)
+            cy = INV_PAD + row * (INV_CELL + INV_GAP)
+            rect = pygame.Rect(cx, cy, INV_CELL, INV_CELL)
+            pygame.draw.rect(surf, (28, 28, 34, 230), rect)
+            pygame.draw.rect(surf, (70, 70, 80), rect, 1)
+            idx = row * INV_COLS + col
+            stack = inv_grid[idx]
+            if stack:
+                bi = stack["block_idx"]
+                col_rgb = SLOT_COLORS[PLACEABLE_BLOCKS[bi]]
+                pygame.draw.rect(surf, col_rgb, rect.inflate(-8, -8))
+                cnt_txt = font.render(str(stack["count"]), True, (255, 255, 255))
+                surf.blit(cnt_txt, (cx + INV_CELL - cnt_txt.get_width() - 4,
+                                    cy + INV_CELL - cnt_txt.get_height() - 2))
+    return surf
+
+
+def _inventory_grid_origin():
+    """背包网格在屏幕上的左上角坐标（居中，略偏上给底部热栏让位）。"""
+    x = (C.WINDOW_WIDTH - INV_GRID_W) // 2
+    y = (C.WINDOW_HEIGHT - INV_GRID_H) // 2 - 60
+    return x, y
+
+
+def _hotbar_origin(hotbar_size):
+    """底部热栏左上角（与 _draw_hud 内部一致）。"""
+    bw, bh = hotbar_size
+    return (C.WINDOW_WIDTH - bw) // 2, C.WINDOW_HEIGHT - bh - 14
+
+
+def _slot_at_pos(pos, hotbar_size, inv_origin):
+    """命中检测：返回 (区域, 索引) 或 None。区域："hotbar" 0..7 / "grid" 0..31。"""
+    mx, my = pos
+    # 热栏
+    bx, by = _hotbar_origin(hotbar_size)
+    if bx <= mx < bx + hotbar_size[0] and by <= my < by + hotbar_size[1]:
+        lx = mx - bx - HOTBAR_PAD
+        ly = my - by - HOTBAR_PAD
+        col = lx // (HOTBAR_CELL + HOTBAR_GAP) if lx >= 0 else -1
+        # 热栏单行，ly 直接判断是否在 cell 高度内即可
+        if 0 <= col < HOTBAR_SLOTS and 0 <= ly < HOTBAR_CELL:
+            return ("hotbar", int(col))
+    # 背包网格
+    gx, gy = inv_origin
+    if gx <= mx < gx + INV_GRID_W and gy <= my < gy + INV_GRID_H:
+        lx = mx - gx - INV_PAD
+        ly = my - gy - INV_PAD
+        col = int(lx) // (INV_CELL + INV_GAP) if lx >= 0 else -1
+        row = int(ly) // (INV_CELL + INV_GAP) if ly >= 0 else -1
+        if 0 <= col < INV_COLS and 0 <= row < INV_ROWS:
+            cell_lx = col * (INV_CELL + INV_GAP)
+            cell_ly = row * (INV_CELL + INV_GAP)
+            if cell_lx <= lx < cell_lx + INV_CELL and cell_ly <= ly < cell_ly + INV_CELL:
+                return ("grid", int(row * INV_COLS + col))
+    return None
+
+
+def _stash_or_drop(stack, inv_grid, inv_counts):
+    """把拖拽中的 stack 放回去：优先匹配的热栏槽 → 同种 grid 槽 → 任意空槽。
+    stack 是 dict {"block_idx","count"}；满了就丢弃剩余。"""
+    bi = stack["block_idx"]
+    # 1) 对应的热栏方块槽
+    if inv_counts[bi] < INV_STACK_MAX:
+        room = INV_STACK_MAX - inv_counts[bi]
+        move = min(room, stack["count"])
+        inv_counts[bi] += move
+        stack["count"] -= move
+    # 2) 同种的 grid 槽
+    if stack["count"] > 0:
+        for cell in inv_grid:
+            if cell and cell["block_idx"] == bi and cell["count"] < INV_STACK_MAX:
+                room = INV_STACK_MAX - cell["count"]
+                move = min(room, stack["count"])
+                cell["count"] += move
+                stack["count"] -= move
+                if stack["count"] == 0:
+                    break
+    # 3) 任意空 grid 槽
+    while stack["count"] > 0:
+        try:
+            idx = inv_grid.index(None)
+        except ValueError:
+            break  # 背包满：剩余丢弃
+        move = min(INV_STACK_MAX, stack["count"])
+        inv_grid[idx] = {"block_idx": bi, "count": move}
+        stack["count"] -= move
+
+
 # ============================================================
 # 体素地形
 # ============================================================
@@ -229,14 +503,16 @@ def _build_terrain():
     solid = [[[False] * MAX_H for _ in range(W)] for _ in range(W)]
     tgrid = [[[0] * MAX_H for _ in range(W)] for _ in range(W)]  # 0 = air marker
 
-    # 高度图：基础 + 双正弦丘陵
+    # 高度图：基础 + 双正弦丘陵（地表在 y=10 附近，地下 y=0..9 实心）
+    BASE_SURFACE = 10
     height = [[0] * W for _ in range(W)]
     for x in range(W):
         for z in range(W):
-            h = 2
+            h = BASE_SURFACE
             h += int(1.6 * math.sin(x * 0.32) * math.cos(z * 0.27))
             h += int(1.1 * math.sin(x * 0.13 + 1.3))
-            height[x][z] = max(0, min(MAX_H - 2, h))
+            # 留出头顶 ~6 格给树冠 / 跳跃，不要顶到 MAX_H
+            height[x][z] = max(4, min(MAX_H - 6, h))
 
     # 群系色带（森林 / 雪 / 沙漠）
     for x in range(W):
@@ -248,6 +524,7 @@ def _build_terrain():
                 surface_slot, sub_slot, deep_slot = SLOT_SNOW, SLOT_SNOW, SLOT_STONE
             else:
                 surface_slot, sub_slot, deep_slot = SLOT_SAND, SLOT_SAND, SLOT_STONE
+            # y=0..h 全部填实（保证地下有 ~10 层厚度）
             for y in range(h + 1):
                 solid[x][z][y] = True
                 if y == h:
@@ -257,8 +534,20 @@ def _build_terrain():
                 else:
                     tgrid[x][z][y] = deep_slot
 
-    # 森林带散布树木
-    for _ in range(14):
+    # 矿脉：在深地层（y=0..h-3）随机散布。铜矿较浅较多，银矿更深更少
+    for x in range(W):
+        for z in range(W):
+            h = height[x][z]
+            for y in range(0, h - 2):
+                # 铜矿：y <= h-4 概率 4%；银矿：y <= h-6 概率 2%
+                if y <= h - 6 and random.random() < 0.020:
+                    tgrid[x][z][y] = SLOT_SILVER
+                elif y <= h - 4 and random.random() < 0.040:
+                    tgrid[x][z][y] = SLOT_COPPER
+
+    # 森林带散布树木（密度按面积放大）
+    TREE_COUNT = max(20, W * W // 130)   # 40x40->12, 80x80->49
+    for _ in range(TREE_COUNT):
         x = random.randint(2, W // 3 - 2)
         z = random.randint(2, W - 3)
         base = height[x][z]
@@ -282,7 +571,85 @@ def _build_terrain():
             solid[x][z][top + 1] = True
             tgrid[x][z][top + 1] = SLOT_LEAVES
 
+    # 散布木屋：在森林带（x < W//3）随机找平坦位置放 1-2 栋；位置不合适就跳过
+    HOUSES_TARGET = 2
+    houses_placed = 0
+    house_attempts = 0
+    while houses_placed < HOUSES_TARGET and house_attempts < 30:
+        house_attempts += 1
+        hx = random.randint(3, W // 3 - 3)
+        hz = random.randint(3, W - 4)
+        if _place_house(solid, tgrid, height, W, MAX_H, hx, hz):
+            houses_placed += 1
+
     return solid, tgrid, height
+
+
+def _place_house(solid, tgrid, height, W, MAX_H, cx, cz, rng=None):
+    """在 (cx,cz) 处盖一栋 5×5 简易木屋：木墙 + 木顶 + 一面墙开门洞 + 内部箱子。
+    返回 True 表示放置成功（地表够平），False 表示位置不合适（已跳过）。"""
+    import random as _r
+    rng = rng or _r
+    HALF = 2   # 5x5：从中心向四周 ±2
+    # 地基检查：5x5 范围内地表高度差不超过 1
+    base = height[cx][cz]
+    for dx in range(-HALF, HALF + 1):
+        for dz in range(-HALF, HALF + 1):
+            x = cx + dx; z = cz + dz
+            if not (0 <= x < W and 0 <= z < W):
+                return False
+            if abs(height[x][z] - base) > 1:
+                return False
+    WALL_H = 3   # 墙高 3 块
+    if base + WALL_H + 1 >= MAX_H:
+        return False
+
+    # 把 5x5 范围整平到 base（移除上方树叶/树干等干扰）
+    for dx in range(-HALF, HALF + 1):
+        for dz in range(-HALF, HALF + 1):
+            x = cx + dx; z = cz + dz
+            for y in range(base + 1, MAX_H):
+                solid[x][z][y] = False
+                tgrid[x][z][y] = 0
+
+    # 四面墙（高 WALL_H）；中间地板已经是地表，不动
+    for dx in range(-HALF, HALF + 1):
+        for dz in range(-HALF, HALF + 1):
+            x = cx + dx; z = cz + dz
+            on_edge = (abs(dx) == HALF or abs(dz) == HALF)
+            if not on_edge:
+                continue   # 内部不填墙
+            for wy in range(1, WALL_H + 1):
+                y = base + wy
+                if 0 <= y < MAX_H:
+                    solid[x][z][y] = True
+                    tgrid[x][z][y] = SLOT_WOOD
+
+    # 屋顶：5x5 平顶（铺一层 wood）
+    roof_y = base + WALL_H + 1
+    if roof_y < MAX_H:
+        for dx in range(-HALF, HALF + 1):
+            for dz in range(-HALF, HALF + 1):
+                x = cx + dx; z = cz + dz
+                solid[x][z][roof_y] = True
+                tgrid[x][z][roof_y] = SLOT_WOOD
+
+    # 门洞：在南墙正中（z = cz+HALF, x = cx）挖掉 y=base+1 和 base+2 两层
+    door_x, door_z = cx, cz + HALF
+    for dy in (1, 2):
+        y = base + dy
+        if 0 <= y < MAX_H:
+            solid[door_x][door_z][y] = False
+            tgrid[door_x][door_z][y] = 0
+
+    # 内部放一个箱子（北墙内侧中央地面上）
+    chest_x, chest_z = cx, cz - HALF + 1
+    chest_y = base + 1
+    if 0 <= chest_y < MAX_H:
+        solid[chest_x][chest_z][chest_y] = True
+        tgrid[chest_x][chest_z][chest_y] = SLOT_CHEST
+
+    return True
 
 
 def _face_slot_for(tgrid, x, y, z, face_name):
@@ -552,6 +919,8 @@ def run_epilogue(font):
     spawn_ground = height[spawn_ix][spawn_iz] + 1   # 脚踩在顶块上方
     player_pos = [float(spawn_ix) + 0.5, float(spawn_ground), float(spawn_iz) + 0.5]
     spawn_pos = list(player_pos)
+    # 史莱姆"记得的玩家位置"——指数平滑追当前 player_pos，制造滞后感
+    player_pos_lagged = list(player_pos)
     player_vel = [0.0, 0.0, 0.0]
     grounded = False
     cam_yaw = math.atan2(W * 0.5 - player_pos[0], W * 0.5 - player_pos[2])
@@ -566,6 +935,10 @@ def run_epilogue(font):
 
     # ---- 背包 + 手持物品 ----
     inv_counts = [16, 16, 16, 16, 16, 16]   # 6 种可放置方块各给 16 个起步
+    # 32 格 stash（背包），每格 None 或 {"block_idx": 0..5, "count": int}
+    inv_grid = [None] * (INV_COLS * INV_ROWS)
+    inventory_open = False                  # E 键开关
+    inv_drag = None                         # 拖拽中的物品，None 或 {"block_idx","count"}
     # sel_idx: 0=稿子, 1=剑, 2-7=方块
     swing_timer = 0.0                        # 挥动动画剩余秒数
     # 热栏小图标（48px）+ 手持大图标（96px）
@@ -581,6 +954,9 @@ def run_epilogue(font):
     hotbar_surf = _build_hotbar_surface(font, inv_counts, sel_idx, tool_hotbar)
     hotbar_tex = _surface_to_texture(hotbar_surf, flip=False)
     hotbar_size = hotbar_surf.get_size()
+    inv_surf = _build_inventory_surface(font, inv_grid)
+    inv_tex = _surface_to_texture(inv_surf, flip=False)
+    inv_size = inv_surf.get_size()
 
     def _refresh_hotbar():
         nonlocal hotbar_tex, hotbar_size
@@ -592,20 +968,32 @@ def run_epilogue(font):
         hotbar_tex = _surface_to_texture(ns, flip=False)
         hotbar_size = ns.get_size()
 
-    # ---- 史莱姆王攻击测试（动态：会跳跃追玩家）----
-    SLIME_SIZE = 2.0
-    king_ground_y = height[W // 2][W // 2]
-    # 用 list 而不是 tuple，方便每帧更新位置；中心 y = 地面 + 1 + 半个身高
-    slime_pos = [W * 0.5, king_ground_y + 1 + SLIME_SIZE * 0.5, W * 0.5]
-    slime_vel = [0.0, 0.0, 0.0]
-    slime_grounded = True
-    slime_jump_timer = 1.2     # 第一次起跳前的等待（秒）
-    king_max_hp = 100
-    king_hp = 100
-    king_alive = True
-    king_hurt = 0.0       # 受击闪红计时
-    king_respawn = 0.0    # 死亡后复活倒计时
-    king_parts = []       # 死亡粒子
+    def _refresh_inventory():
+        nonlocal inv_tex, inv_size
+        try:
+            glDeleteTextures([inv_tex])
+        except Exception:
+            pass
+        ns = _build_inventory_surface(font, inv_grid)
+        inv_tex = _surface_to_texture(ns, flip=False)
+        inv_size = ns.get_size()
+
+    # ---- 史莱姆群落（多只，大小各异，散布地图）----
+    # 每只: (相对坐标 rx,rz, size, hp) —— rx/rz 是 0..1 比例（相对 W），size=方块边长
+    SLIME_SPAWNS = [
+        (0.50, 0.50, 1.5, 150),    # 中央大史莱姆（Boss 风）
+        (0.32, 0.40, 0.8, 80),
+        (0.68, 0.42, 0.8, 80),
+        (0.42, 0.68, 1.0, 100),
+        (0.62, 0.66, 0.6, 60),     # 小但快
+    ]
+    slimes = []
+    for rx, rz, sz, hp in SLIME_SPAWNS:
+        ix = int(W * rx); iz = int(W * rz)
+        if 0 <= ix < W and 0 <= iz < W:
+            ground_top = height[ix][iz] + 1
+            slimes.append(Slime3D((float(ix) + 0.5, 0, float(iz) + 0.5),
+                                  size=sz, ground_top_y=ground_top, hp=hp))
 
     # 眼睛/朝向初值（供事件处理命中判定，循环里每帧覆盖）
     eye = (player_pos[0], player_pos[1] + EYE_HEIGHT, player_pos[2])
@@ -637,6 +1025,8 @@ def run_epilogue(font):
     paused = False
     target_block = None     # 准星命中的方块（左键挖）
     place_block = None      # 命中方块前的空格（右键放）
+    mining_target = None    # 正在持续挖的方块 (x,y,z)；None 表示未挖
+    mining_progress = 0.0   # 0..1 当前进度
     last_w_tap = 0          # 上次按 W 的时间（双击 W 触发疾跑）
     sprint_toggle = False   # 双击 W 后保持疾跑，直到松开 W
     while running:
@@ -652,15 +1042,32 @@ def run_epilogue(font):
                         pygame.mouse.set_visible(True)
                         pygame.event.set_grab(False)
                     else:
+                        # ESC 恢复时强制关掉背包（避免两种"非游戏态"叠加）
+                        if inventory_open:
+                            inventory_open = False
+                            inv_drag = None
+                            _refresh_inventory()
                         pygame.mouse.set_visible(False)
                         pygame.event.set_grab(True)
                         pygame.event.get()  # 清空旧事件，避免累积位移
+                elif event.key == pygame.K_e and not paused:
+                    # 切换背包：开 → 释放鼠标；关 → 锁回鼠标
+                    inventory_open = not inventory_open
+                    inv_drag = None
+                    _refresh_inventory()
+                    if inventory_open:
+                        pygame.mouse.set_visible(True)
+                        pygame.event.set_grab(False)
+                    else:
+                        pygame.mouse.set_visible(False)
+                        pygame.event.set_grab(True)
+                        pygame.event.get()
                 elif event.key == pygame.K_q and paused:
                     running = False
-                elif pygame.K_1 <= event.key <= pygame.K_8 and not paused:
+                elif pygame.K_1 <= event.key <= pygame.K_8 and not paused and not inventory_open:
                     sel_idx = event.key - pygame.K_1
                     _refresh_hotbar()
-                elif event.key == pygame.K_w and not paused:
+                elif event.key == pygame.K_w and not paused and not inventory_open:
                     # 双击 W（300ms 内）触发疾跑
                     now = pygame.time.get_ticks()
                     if now - last_w_tap < 300:
@@ -679,49 +1086,108 @@ def run_epilogue(font):
                         pygame.mouse.set_visible(False)
                         pygame.event.set_grab(True)
                         pygame.event.get()
+                elif inventory_open and event.button == 1:
+                    # ---- 背包拖拽（单击进入拖拽态，再次点击放下） ----
+                    slot = _slot_at_pos(event.pos, hotbar_size, _inventory_grid_origin())
+                    if inv_drag is None:
+                        # 拾起：从点击的槽位抓出整堆
+                        if slot is not None:
+                            area, idx = slot
+                            if area == "hotbar":
+                                # 只有方块槽（idx >= BLOCK_SLOT_BASE）能拖
+                                if idx >= BLOCK_SLOT_BASE:
+                                    bi = idx - BLOCK_SLOT_BASE
+                                    if inv_counts[bi] > 0:
+                                        inv_drag = {"block_idx": bi, "count": inv_counts[bi]}
+                                        inv_counts[bi] = 0
+                                        _refresh_hotbar()
+                            else:  # grid
+                                if inv_grid[idx] is not None:
+                                    inv_drag = {"block_idx": inv_grid[idx]["block_idx"],
+                                                "count": inv_grid[idx]["count"]}
+                                    inv_grid[idx] = None
+                                    _refresh_inventory()
+                    else:
+                        # 放下：合并 / 交换 / 进空槽
+                        if slot is None:
+                            _stash_or_drop(inv_drag, inv_grid, inv_counts)
+                            inv_drag = None
+                            _refresh_hotbar(); _refresh_inventory()
+                        else:
+                            area, idx = slot
+                            if area == "hotbar":
+                                if idx < BLOCK_SLOT_BASE:
+                                    # 工具槽不接受方块：取消拖拽
+                                    _stash_or_drop(inv_drag, inv_grid, inv_counts)
+                                    inv_drag = None
+                                    _refresh_hotbar(); _refresh_inventory()
+                                else:
+                                    target_bi = idx - BLOCK_SLOT_BASE
+                                    if target_bi == inv_drag["block_idx"]:
+                                        total = inv_counts[target_bi] + inv_drag["count"]
+                                        capped = min(total, INV_STACK_MAX)
+                                        inv_counts[target_bi] = capped
+                                        leftover = total - capped
+                                        if leftover > 0:
+                                            _stash_or_drop({"block_idx": target_bi, "count": leftover},
+                                                           inv_grid, inv_counts)
+                                        inv_drag = None
+                                        _refresh_hotbar(); _refresh_inventory()
+                                    else:
+                                        # 不同种方块：热栏槽位是固定类型，不能塞别的
+                                        _stash_or_drop(inv_drag, inv_grid, inv_counts)
+                                        inv_drag = None
+                                        _refresh_hotbar(); _refresh_inventory()
+                            else:  # grid
+                                if inv_grid[idx] is None:
+                                    inv_grid[idx] = dict(inv_drag)
+                                    inv_drag = None
+                                    _refresh_inventory()
+                                elif inv_grid[idx]["block_idx"] == inv_drag["block_idx"]:
+                                    total = inv_grid[idx]["count"] + inv_drag["count"]
+                                    capped = min(total, INV_STACK_MAX)
+                                    inv_grid[idx]["count"] = capped
+                                    leftover = total - capped
+                                    if leftover > 0:
+                                        _stash_or_drop({"block_idx": inv_grid[idx]["block_idx"],
+                                                        "count": leftover}, inv_grid, inv_counts)
+                                        _refresh_hotbar()
+                                    inv_drag = None
+                                    _refresh_inventory()
+                                else:
+                                    # 不同种 → 交换（用户继续拿着原来的那堆）
+                                    old = inv_grid[idx]
+                                    inv_grid[idx] = dict(inv_drag)
+                                    inv_drag = dict(old)
+                                    _refresh_inventory()
                 else:
                     # 游戏中：左键攻击/挖 / 右键放
                     if event.button == 1:
                         swing_timer = SWING_DURATION
-                        hit_king = False
-                        # 拿剑（槽 1）且瞄准史莱姆王 → 攻击
-                        if sel_idx == 1 and king_alive:
-                            kx = slime_pos[0] - eye[0]
-                            ky_ = slime_pos[1] - eye[1]
-                            kz = slime_pos[2] - eye[2]
-                            kdist = math.sqrt(kx * kx + ky_ * ky_ + kz * kz)
-                            if kdist < 7.5:
-                                cosang = (look_dir[0] * kx + look_dir[1] * ky_ + look_dir[2] * kz) / kdist
-                                if cosang > 0.93:
-                                    king_hp -= 25
-                                    king_hurt = 0.18
-                                    hit_king = True
+                        hit_slime = False
+                        # 拿剑（槽 1）→ 遍历所有史莱姆，找命中的那只攻击
+                        if sel_idx == 1:
+                            for s in slimes:
+                                if s.hit_test(eye, look_dir):
+                                    died = s.damage(25)
+                                    hit_slime = True
                                     try:
                                         from assets import play_sound
                                         play_sound("npc_hit", 0.5)
                                     except Exception:
                                         pass
-                                    if king_hp <= 0:
-                                        king_hp = 0
-                                        king_alive = False
-                                        king_respawn = 5.0
-                                        _spawn_king_particles(king_parts, tuple(slime_pos))
+                                    if died:
                                         try:
                                             from assets import play_sound
                                             play_sound("npc_killed", 0.6)
                                         except Exception:
                                             pass
-                        # 没砍到王就尝试挖方块
-                        if not hit_king and target_block is not None:
-                            hx, hy, hz = target_block
-                            if 0 <= hx < W and 0 <= hz < W and 0 <= hy < MAX_H:
-                                mined = tgrid[hx][hz][hy]
-                                solid[hx][hz][hy] = False
-                                tgrid[hx][hz][hy] = 0
-                                vert_count = _rebuild_vbo(solid, tgrid, slot_uv, vbo_id)
-                                if mined in PLACEABLE_BLOCKS:
-                                    inv_counts[PLACEABLE_BLOCKS.index(mined)] += 1
-                                    _refresh_hotbar()
+                                    break   # 一击只砍一只
+                        # 没砍到史莱姆就尝试挖方块——现在改成"开始挖"，实际破坏在主循环累计进度
+                        if not hit_slime and target_block is not None:
+                            mining_target = target_block
+                            mining_progress = 0.0
+                            swing_timer = SWING_DURATION
                     elif event.button == 3 and target_block is not None and place_block is not None:
                         # 必须瞄准实心方块才能放（杜绝悬空放置）
                         if sel_idx >= BLOCK_SLOT_BASE:
@@ -738,7 +1204,7 @@ def run_epilogue(font):
                                         _refresh_hotbar()
                                         swing_timer = SWING_DURATION
 
-        if not paused:
+        if not paused and not inventory_open:
             if swing_timer > 0:
                 swing_timer = max(0.0, swing_timer - dt)
             # 鼠标视角
@@ -798,6 +1264,53 @@ def run_epilogue(font):
                         -math.cos(cam_yaw) * math.cos(cam_pitch))
             target_block, place_block = _raycast_block(solid, W, MAX_H, eye, look_dir)
 
+            # 史莱姆"记忆中的玩家位置"——指数平滑，制造转向滞后感
+            lag_alpha = min(1.0, dt / SLIME_LAG_TIME)
+            player_pos_lagged[0] += (player_pos[0] - player_pos_lagged[0]) * lag_alpha
+            player_pos_lagged[2] += (player_pos[2] - player_pos_lagged[2]) * lag_alpha
+
+            # ---- 挖掘进度更新 ----
+            # LMB 持续按住、目标没变、准星还指在同一格 → 累计进度；进度满才破坏
+            lmb_held = pygame.mouse.get_pressed()[0]
+            # 连续挖掘：如果 LMB 还按着但 mining_target 是 None（刚破坏完上一格），
+            # 就从当前准星指向的方块续上，不用松开重按
+            if lmb_held and mining_target is None and target_block is not None:
+                mining_target = target_block
+                mining_progress = 0.0
+            if mining_target is not None:
+                # 检查中断条件：松开 LMB、准星没指方块、或指到别的格子
+                if (not lmb_held or target_block is None
+                        or tuple(target_block) != tuple(mining_target)):
+                    mining_target = None
+                    mining_progress = 0.0
+                else:
+                    hx, hy, hz = target_block
+                    if 0 <= hx < W and 0 <= hz < W and 0 <= hy < MAX_H and solid[hx][hz][hy]:
+                        slot = tgrid[hx][hz][hy]
+                        mt = TILE_MINE_TIME.get(slot, DEFAULT_MINE_TIME)
+                        mining_progress += dt / mt
+                        if mining_progress >= 1.0:
+                            # 真的破坏
+                            mined = tgrid[hx][hz][hy]
+                            solid[hx][hz][hy] = False
+                            tgrid[hx][hz][hy] = 0
+                            vert_count = _rebuild_vbo(solid, tgrid, slot_uv, vbo_id)
+                            if mined in PLACEABLE_BLOCKS:
+                                inv_counts[PLACEABLE_BLOCKS.index(mined)] += 1
+                                _refresh_hotbar()
+                            try:
+                                from assets import play_sound
+                                play_sound("dig", 0.35)
+                            except Exception:
+                                pass
+                            # 准备挖下一格（如果还在按 LMB）
+                            mining_target = target_block if target_block else None
+                            mining_progress = 0.0
+                            swing_timer = SWING_DURATION
+                    else:
+                        mining_target = None
+                        mining_progress = 0.0
+
             # 走路摆动相位
             if grounded and (abs(player_vel[0]) + abs(player_vel[2])) > 0.5:
                 walk_phase += dt * 10.0
@@ -805,66 +1318,9 @@ def run_epilogue(font):
             else:
                 moving = False
 
-            # 史莱姆王状态更新
-            if king_hurt > 0:
-                king_hurt = max(0.0, king_hurt - dt)
-            if not king_alive:
-                king_respawn -= dt
-                for p in king_parts:
-                    p['vy'] -= 18.0 * dt
-                    p['x'] += p['vx'] * dt
-                    p['y'] += p['vy'] * dt
-                    p['z'] += p['vz'] * dt
-                    p['life'] -= dt
-                king_parts = [p for p in king_parts if p['life'] > 0]
-                if king_respawn <= 0:
-                    king_alive = True
-                    king_hp = king_max_hp
-                    king_parts = []
-                    # 复活时重置位置到世界中央地面，速度归零
-                    slime_pos = [W * 0.5, king_ground_y + 1 + SLIME_SIZE * 0.5, W * 0.5]
-                    slime_vel = [0.0, 0.0, 0.0]
-                    slime_grounded = True
-                    slime_jump_timer = 1.0
-            else:
-                # 史莱姆跳跃 AI：站定时倒计时，到点就朝玩家方向跳；空中受重力
-                if slime_grounded:
-                    slime_vel[0] = 0.0
-                    slime_vel[2] = 0.0
-                    slime_jump_timer -= dt
-                    if slime_jump_timer <= 0:
-                        import random as _rng
-                        slime_jump_timer = SLIME_JUMP_INTERVAL + _rng.random() * SLIME_JUMP_JITTER
-                        # 水平方向：朝玩家走单位向量 × 慢速
-                        dx = player_pos[0] - slime_pos[0]
-                        dz = player_pos[2] - slime_pos[2]
-                        L = math.sqrt(dx * dx + dz * dz) + 1e-6
-                        slime_vel[0] = (dx / L) * SLIME_HSPEED
-                        slime_vel[2] = (dz / L) * SLIME_HSPEED
-                        slime_vel[1] = SLIME_JUMP_VY
-                        slime_grounded = False
-                else:
-                    slime_vel[1] -= SLIME_GRAVITY_3D * dt
-
-                # 位置积分
-                slime_pos[0] += slime_vel[0] * dt
-                slime_pos[1] += slime_vel[1] * dt
-                slime_pos[2] += slime_vel[2] * dt
-
-                # 落地检测：查 slime 当前 (x,z) 下的地表高度
-                sx_i = int(slime_pos[0])
-                sz_i = int(slime_pos[2])
-                if 0 <= sx_i < W and 0 <= sz_i < W:
-                    ground_top = height[sx_i][sz_i] + 1   # 顶块上方
-                else:
-                    ground_top = 0
-                floor_y = ground_top + SLIME_SIZE * 0.5
-                if slime_pos[1] <= floor_y:
-                    slime_pos[1] = floor_y
-                    slime_vel[1] = 0.0
-                    slime_vel[0] = 0.0
-                    slime_vel[2] = 0.0
-                    slime_grounded = True
+            # 史莱姆群落 AI 更新（每只独立追玩家——读滞后位置 player_pos_lagged）
+            for s in slimes:
+                s.update(dt, player_pos_lagged, height, W)
         else:
             pygame.mouse.get_rel()  # 暂停时仍消费位移，避免恢复瞬间跳变
             target_block = None
@@ -897,18 +1353,15 @@ def run_epilogue(font):
         # 准星命中方块的线框高亮
         if not paused:
             _draw_block_highlight(target_block)
+            # 挖掘进度条：正在挖时在方块上方显示 0..1 的横条
+            if mining_target is not None and mining_progress > 0:
+                mx, my, mz = mining_target
+                mpos = (mx + 0.5, my + 1.25, mz + 0.5)
+                _draw_billboard_hp_bar(mpos, cam_pos, mining_progress, 0.8, height_world=0.12)
 
-        # MC 风方块史莱姆：5 面身体贴图 + 南面用 slime_face.png；固定朝向不跟踪玩家
-        if king_alive and slime_tex is not None:
-            tint = (1.0, 0.45, 0.45) if king_hurt > 0 else (1.0, 1.0, 1.0)
-            slime_center = tuple(slime_pos)
-            _draw_textured_cube(slime_tex, slime_center, SLIME_SIZE, tint,
-                                side_tex=slime_face_tex)
-            if king_hp < king_max_hp:
-                bar_pos = (slime_center[0], slime_center[1] + SLIME_SIZE * 0.5 + 0.4, slime_center[2])
-                _draw_billboard_hp_bar(bar_pos, cam_pos, king_hp / king_max_hp, 2.6)
-        if king_parts:
-            _draw_king_particles(king_parts, cam_pos)
+        # MC 风方块史莱姆群落：每只独立渲染（cube + 血条 + 粒子）
+        for s in slimes:
+            s.draw(slime_tex, slime_face_tex, cam_pos)
 
         # ---- 手持物品（世界空间 viewmodel：透视 + 走路摆动 + 挥动）----
         if sel_idx == 0:
@@ -922,7 +1375,7 @@ def run_epilogue(font):
             else:
                 held_tex, is_hand = None, True
         swing_progress = 1.0 - swing_timer / SWING_DURATION if swing_timer > 0 else 0.0
-        if not paused and (held_tex is not None or is_hand):
+        if not paused and not inventory_open and (held_tex is not None or is_hand):
             _draw_viewmodel(held_tex, is_hand, swing_progress, walk_phase, moving)
 
         # ---- HUD（正交投影）----
@@ -930,6 +1383,10 @@ def run_epilogue(font):
                   hotbar_tex, hotbar_size,
                   pause_tex if paused else None, pause_surf.get_size(),
                   quit_rect if paused else None, quit_tex, quit_surf.get_size())
+        # 背包叠加层（E 键打开时）
+        if inventory_open:
+            _draw_inventory_overlay(inv_tex, inv_size, inv_drag, held_block_tex, font,
+                                    _inventory_grid_origin())
 
         pygame.display.flip()
 
@@ -938,7 +1395,7 @@ def run_epilogue(font):
     pygame.event.set_grab(False)
     try:
         held_all = [t for t in held_tool_tex + held_block_tex if t is not None]
-        texs = [atlas_tex, hud_tex, pause_tex, quit_tex, hotbar_tex]
+        texs = [atlas_tex, hud_tex, pause_tex, quit_tex, hotbar_tex, inv_tex]
         if slime_tex is not None:
             texs.append(slime_tex)
         if slime_face_tex is not None:
@@ -1263,6 +1720,104 @@ def _draw_hud(hud_tex, hud_size,
             glTexCoord2f(1, 1); glVertex2f(tx + qw, ty + qh)
             glTexCoord2f(0, 1); glVertex2f(tx, ty + qh)
             glEnd()
+
+    glDisable(GL_BLEND)
+    glEnable(GL_DEPTH_TEST)
+    glPopMatrix()
+    glMatrixMode(GL_PROJECTION)
+    glPopMatrix()
+    glMatrixMode(GL_MODELVIEW)
+
+
+def _draw_inventory_overlay(inv_tex, inv_size, inv_drag, held_block_tex, font, inv_origin):
+    """E 打开时画：半透明遮罩 + 背包网格贴片 + 拖拽中物品（贴鼠标）。"""
+    glMatrixMode(GL_PROJECTION)
+    glPushMatrix()
+    glLoadIdentity()
+    glOrtho(0, C.WINDOW_WIDTH, C.WINDOW_HEIGHT, 0, -1, 1)
+    glMatrixMode(GL_MODELVIEW)
+    glPushMatrix()
+    glLoadIdentity()
+
+    glDisable(GL_DEPTH_TEST)
+    glDisable(GL_TEXTURE_2D)
+    glEnable(GL_BLEND)
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+
+    # 半透明遮罩
+    glColor4f(0.0, 0.0, 0.0, 0.55)
+    glBegin(GL_QUADS)
+    glVertex2f(0, 0)
+    glVertex2f(C.WINDOW_WIDTH, 0)
+    glVertex2f(C.WINDOW_WIDTH, C.WINDOW_HEIGHT)
+    glVertex2f(0, C.WINDOW_HEIGHT)
+    glEnd()
+
+    # 背包网格贴片
+    gx, gy = inv_origin
+    iw, ih = inv_size
+    glEnable(GL_TEXTURE_2D)
+    glBindTexture(GL_TEXTURE_2D, inv_tex)
+    glColor4f(1, 1, 1, 1)
+    glBegin(GL_QUADS)
+    glTexCoord2f(0, 0); glVertex2f(gx, gy)
+    glTexCoord2f(1, 0); glVertex2f(gx + iw, gy)
+    glTexCoord2f(1, 1); glVertex2f(gx + iw, gy + ih)
+    glTexCoord2f(0, 1); glVertex2f(gx, gy + ih)
+    glEnd()
+
+    # 顶部标题
+    title = font.render("Inventory  -  E/ESC close  -  click to pick up, click again to drop",
+                        True, (255, 230, 80))
+    title_tex = _surface_to_texture(title, flip=False)
+    glBindTexture(GL_TEXTURE_2D, title_tex)
+    tw, th = title.get_size()
+    tx = (C.WINDOW_WIDTH - tw) // 2
+    ty = gy - th - 8
+    glBegin(GL_QUADS)
+    glTexCoord2f(0, 0); glVertex2f(tx, ty)
+    glTexCoord2f(1, 0); glVertex2f(tx + tw, ty)
+    glTexCoord2f(1, 1); glVertex2f(tx + tw, ty + th)
+    glTexCoord2f(0, 1); glVertex2f(tx, ty + th)
+    glEnd()
+    try:
+        glDeleteTextures([title_tex])
+    except Exception:
+        pass
+
+    # 拖拽中的物品（贴在鼠标位置）
+    if inv_drag is not None:
+        bi = inv_drag["block_idx"]
+        mx, my = pygame.mouse.get_pos()
+        # 优先用方块大图，没有就画色块
+        tex = held_block_tex[bi] if bi < len(held_block_tex) else None
+        cs = 48
+        if tex is not None:
+            glBindTexture(GL_TEXTURE_2D, tex)
+            glColor4f(1, 1, 1, 1)
+            glBegin(GL_QUADS)
+            glTexCoord2f(0, 0); glVertex2f(mx - cs // 2, my - cs // 2)
+            glTexCoord2f(1, 0); glVertex2f(mx + cs // 2, my - cs // 2)
+            glTexCoord2f(1, 1); glVertex2f(mx + cs // 2, my + cs // 2)
+            glTexCoord2f(0, 1); glVertex2f(mx - cs // 2, my + cs // 2)
+            glEnd()
+        # 数量
+        cnt = font.render(str(inv_drag["count"]), True, (255, 255, 255))
+        cnt_tex = _surface_to_texture(cnt, flip=False)
+        glBindTexture(GL_TEXTURE_2D, cnt_tex)
+        cw, chh = cnt.get_size()
+        cx_ = mx + cs // 2 - cw - 2
+        cy_ = my + cs // 2 - chh - 2
+        glBegin(GL_QUADS)
+        glTexCoord2f(0, 0); glVertex2f(cx_, cy_)
+        glTexCoord2f(1, 0); glVertex2f(cx_ + cw, cy_)
+        glTexCoord2f(1, 1); glVertex2f(cx_ + cw, cy_ + chh)
+        glTexCoord2f(0, 1); glVertex2f(cx_, cy_ + chh)
+        glEnd()
+        try:
+            glDeleteTextures([cnt_tex])
+        except Exception:
+            pass
 
     glDisable(GL_BLEND)
     glEnable(GL_DEPTH_TEST)

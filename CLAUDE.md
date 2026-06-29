@@ -315,4 +315,40 @@ MyTerraria/
 2.像2d那样,添加挖掘的耗费时间,目前挖掘是瞬间完成的.
 3.目前的地层还是很浅,感觉至少得有个十层吧,然后得像2d那样添加矿物
 4.目前这个史莱姆有点大了,这个只是普通史莱姆的模型,不应该这么大,你可以告诉我在哪里调整
+5.我跟你说的史莱姆不要一直脸对着我,但是现在是完全不会转向.我要的效果是史莱姆只会往它头朝向的地方跳,然后跳的过程中不要转向,可以在落到地上后转向我,然后再跳
 
+
+# ver4.8
+## 问题
+1.好吧我错了,其实史莱姆一直朝向玩家也是可以的(包括跳跃过程中也允许转向),只是之前那个有点视角太锁着我了,我想要的效果是他确实会锁定我,但是不能让我感觉它的视角像是在跟我的视角相对静止,需要一点点滞后感你懂我意思吗
+2.连续点鼠标左键似乎会报错(terraria) PS D:\A Python Gaming\Terraria\MyTerraria> python .\run.py --3d
+pygame 2.6.1 (SDL 2.28.4, Python 3.13.12)
+Hello from the pygame community. https://www.pygame.org/contribute.html
+Traceback (most recent call last):
+  File "D:\A Python Gaming\Terraria\MyTerraria\run.py", line 18, in <module>
+    scene3d.run_epilogue(font)
+    ~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "D:\A Python Gaming\Terraria\MyTerraria/src\scene3d.py", line 859, in run_epilogue
+    if not lmb_held or target_block is None or tuple(target_block) != tuple(mining_target):
+                                                                      ~~~~~^^^^^^^^^^^^^^^
+TypeError: 'NoneType' object is not iterable
+
+
+3.我说的所谓的滞后一点,我认为可以就理解为,当玩家移动后,史莱姆稍等一会(1s以内),然后再开始转向我
+4.目前左键按住不动不能连续挖方块,必须松开然后再次对准方块按住左键才行
+5.地图还可以再大点,以及可以生成更多史莱姆(大小不同).以及目前这个世界有一点荒凉,不知道能不能生成结构?(一个简单的小木屋即可,然后里面放箱子,你看是否有对应资源)
+6.目前只有物品栏,需要加入背包(按e打开)
+
+# ver4.9（实现）
+1. **地图扩大** `WORLD_SIZE = 120`, `MAX_H = 18`;`_build_terrain` 重写为 BASE_SURFACE=10 起伏,地下填满 y=0..h,散布铜矿/银矿
+2. **挖掘耗时** `TILE_MINE_TIME`（草/土/沙/雪 0.3s,木 0.5s,石 0.8s,铜/银 1.1s）;`mining_progress` 累计 + 方块上方进度条
+3. **多只史莱姆** `Slime3D` 类,5 只群落 (`SLIME_SPAWNS`),大小 0.6 / 0.8 / 1.0 / 1.5,各自血量
+4. **滞后转向** `player_pos_lagged` 指数平滑 (`SLIME_LAG_TIME = 0.5s`),史莱姆读滞后位置算朝向 → "等一下再转"效果
+5. **木屋结构** `_place_house()` 程序化生成:清空 + 木墙 + 木顶 + 门缺口 + 内嵌箱子方块
+6. **连续挖掘** LMB 按住时,挖完一格自动续上准星新指向的方块 (无需松开重按)
+7. **背包 UI (E 键)** 8×4 = 32 格 stash + 半透明遮罩;单击进入拖拽态,再次点击放下;支持热栏 ↔ 网格 同种合并/不同种交换/拖空白退回原位;`_stash_or_drop` 自动归位
+
+## 问题
+1.箱子需要能右键交互打开,里面要摆东西,最好是比较珍贵的物品
+2.我得自己去找一下史莱姆生成的各种参数,把速度调慢一点,同时存在数目也调低一点
+3.物品栏除了稿子和剑,其他方块的图标不知道为什么都是填满了格子的涂色,你直接放图标不就行了吗(我拖动方块发现显示的是图标),这个结果就导致,我把物品栏3位置的土方块放到背包后,三位置还是黄色的涂色,然后我想把土方块放到位置4发现,他自动跑到位置3去了
