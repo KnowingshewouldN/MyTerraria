@@ -1179,6 +1179,13 @@ def run_epilogue(font):
     pygame.display.set_mode((C.WINDOW_WIDTH, C.WINDOW_HEIGHT),
                             pygame.OPENGL | pygame.DOUBLEBUF)
 
+    # 3D 场景延续 2D 的 Overworld Day 背景音乐（与显示模式无关，mixer 全局）
+    try:
+        from assets import play_music
+        play_music("Scott Lloyd Shelly - Overworld Day.mp3", 0.5, -1)
+    except Exception:
+        pass
+
     # 基本 GL 状态
     glEnable(GL_DEPTH_TEST)
     glEnable(GL_TEXTURE_2D)
@@ -1782,6 +1789,11 @@ def run_epilogue(font):
     # 清理
     pygame.mouse.set_visible(True)
     pygame.event.set_grab(False)
+    try:
+        from assets import stop_music
+        stop_music()
+    except Exception:
+        pass
     try:
         held_all = [t for t in held_tool_tex + held_block_tex if t is not None]
         texs = [atlas_tex, hud_tex, pause_tex, quit_tex, hotbar_tex, inv_tex, chest_tex]
